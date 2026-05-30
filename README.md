@@ -62,8 +62,8 @@ Future<void> main() async {
   final downloader = OsmDownloader(outputDirectory: './maps');
   final pbf = await downloader.downloadRegion(
     region: 'south-america/brazil/sao-paulo',
-    onProgress: (got, total) =>
-        print('${(got / 1e6).toStringAsFixed(1)} MB'),
+    onProgress: (got, total, url) =>
+        print('$url: ${(got / 1e6).toStringAsFixed(1)} MB'),
   );
 
   // 2. Compile it into fast, compressed storage.
@@ -92,6 +92,35 @@ Future<void> main() async {
 // Drop-in replacement; identical API and results.
 final router = ContractionHierarchyRouter(storage: storage, graphId: 'sao_paulo');
 ```
+
+### Pluggable download sources (auto provider & mirror selection)
+
+`OsmDownloader` is source-agnostic: it never contains provider-specific URL
+logic. Region → URL mapping lives behind `OsmDownloadSource` implementations,
+selected by an `OsmDownloadSourceRegistry`. Built-in providers: **Geofabrik**,
+**OSM France**, **BBBike** and **OpenStreetMap Planet**.
+
+```dart
+// Registry preloaded with all built-in providers, in priority order.
+final registry = OsmDownloadSourceRegistry.withDefaults(benchmarkByDefault: true);
+
+// Add a private/enterprise mirror at the highest priority.
+registry.register(
+  GeofabrikSource(baseUrls: ['https://maps.corp.example/geofabrik/']),
+  priority: 0,
+);
+registry.setEnabled('planet', false); // opt out of the whole-planet fallback
+
+// The downloader just gets a region; the registry finds a provider, benchmarks
+// mirrors (HEAD latency + throughput, cached), and falls back on failure.
+final downloader = OsmDownloader(sourceResolver: registry);
+final pbf = await downloader.downloadRegion(
+  region: 'south-america/brazil/santa-catarina',
+);
+```
+
+Implement `OsmDownloadSource` (or `OsmMirroredSource`) to add new providers,
+cloud buckets, `.osm.bz2` dumps or local mirrors — no downloader changes.
 
 ### Plug in a custom data source
 

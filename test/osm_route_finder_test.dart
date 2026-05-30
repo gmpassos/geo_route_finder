@@ -8,6 +8,25 @@ import 'package:test/test.dart';
 
 import 'support.dart';
 
+/// Formats a [Duration] as a compact, human-readable string, e.g. `4.20s` or
+/// `2m 03.5s` for longer phases.
+String _fmtDuration(Duration d) {
+  final totalSeconds = d.inMilliseconds / 1000.0;
+  if (totalSeconds < 60) return '${totalSeconds.toStringAsFixed(2)}s';
+  final minutes = d.inMinutes;
+  final seconds = totalSeconds - minutes * 60;
+  return '${minutes}m ${seconds.toStringAsFixed(1)}s';
+}
+
+/// Average throughput in MB/s over [bytes] transferred in [elapsed], or `n/a`
+/// when the elapsed time is too small to be meaningful (e.g. a warm cache).
+String _fmtThroughput(int bytes, Duration elapsed) {
+  final seconds = elapsed.inMilliseconds / 1000.0;
+  if (seconds < 0.05) return 'n/a';
+  final mbPerSec = (bytes / (1024 * 1024)) / seconds;
+  return '${mbPerSec.toStringAsFixed(1)} MB/s';
+}
+
 /// End-to-end integration test exercising the full OpenStreetMap pipeline
 /// against **real** data, with nothing mocked:
 ///
@@ -44,16 +63,23 @@ void main() {
     test(
       'downloads, converts, loads and routes Beiramar -> Villa Romana',
       () async {
+        final totalStopwatch = Stopwatch()..start();
+        stdout.writeln('=== OSM end-to-end pipeline ===');
+        stdout.writeln('Region: $region');
+        stdout.writeln('Cache:  ${localDownloadCacheDirectory.path}');
+
         // 1. Download all OSM data covering the route area.
+        stdout.writeln('\n[1/5] Downloading extract...');
         final downloader = OsmDownloader(
           outputDirectory: localDownloadCacheDirectory,
         );
         String pbfPath;
         var lastReportedMb = -1;
+        final downloadStopwatch = Stopwatch()..start();
         try {
           pbfPath = await downloader.downloadRegion(
             region: region,
-            onProgress: (received, total) {
+            onProgress: (received, total, url) {
               final mb = received ~/ (1024 * 1024);
               // Throttle progress output to once per ~16 MB.
               if (mb >= lastReportedMb + 16) {
@@ -61,7 +87,11 @@ void main() {
                 final totalMb = total != null
                     ? '/${total ~/ (1024 * 1024)} MB'
                     : '';
-                stdout.write('\rDownloading $region: $mb MB$totalMb   ');
+                final speed = _fmtThroughput(
+                  received,
+                  downloadStopwatch.elapsed,
+                );
+                stdout.write('\r  $url: $mb MB$totalMb ($speed)   ');
               }
             },
           );
@@ -69,6 +99,7 @@ void main() {
         } finally {
           downloader.close();
         }
+        downloadStopwatch.stop();
 
         expect(
           File(pbfPath).existsSync(),
@@ -76,15 +107,31 @@ void main() {
           reason: 'downloaded extract should exist on disk',
         );
 
+        final pbfBytes = File(pbfPath).lengthSync();
+        stdout.writeln(
+          '  Downloaded ${(pbfBytes / (1024 * 1024)).toStringAsFixed(1)} MB '
+          'in ${_fmtDuration(downloadStopwatch.elapsed)} '
+          '(avg ${_fmtThroughput(pbfBytes, downloadStopwatch.elapsed)})',
+        );
+        stdout.writeln('  File: $pbfPath');
+
         // 2. Convert the OSM extract into the package's internal format, and
         // 3. load it through the OSM data source. OsmDataSource performs the
         //    conversion via the OsmConverter it is given.
+        stdout.writeln('\n[2/5] Converting PBF to routing graph...');
         final converter = OsmConverter();
         final dataSource = OsmDataSource(
           pbfFile: pbfPath,
           converter: converter,
         );
+        final conversionStopwatch = Stopwatch()..start();
         final graph = await dataSource.loadGraph();
+        conversionStopwatch.stop();
+
+        stdout.writeln(
+          '  Converted in ${_fmtDuration(conversionStopwatch.elapsed)}: '
+          '${graph.nodes.length} nodes, ${graph.edges.length} edges',
+        );
 
         expect(
           graph.nodes,
@@ -98,17 +145,25 @@ void main() {
         );
 
         // Make the loaded graph routable by storing it under a graph id.
+        stdout.writeln('\n[3/5] Storing graph as "$graphId"...');
         final storage = MemoryStorage();
+        final storeStopwatch = Stopwatch()..start();
         await storage.saveGraph(graphId, graph);
+        storeStopwatch.stop();
+        stdout.writeln('  Stored in ${_fmtDuration(storeStopwatch.elapsed)}');
 
         // 4. Create a route finder instance.
+        stdout.writeln('\n[4/5] Routing Beiramar -> Villa Romana...');
         final router = AStarRouter(storage: storage, graphId: graphId);
 
         // 5. Calculate the shortest drivable route.
+        final routeStopwatch = Stopwatch()..start();
         final route = await router.findRoute(
           beiramarShopping,
           villaRomanaShopping,
         );
+        routeStopwatch.stop();
+        stdout.writeln('  Routed in ${_fmtDuration(routeStopwatch.elapsed)}');
 
         // 6. Verify the result.
         expect(route.found, isTrue, reason: 'a valid route should be found');
@@ -137,12 +192,25 @@ void main() {
         );
 
         // 7. Debug output.
+        totalStopwatch.stop();
+        stdout.writeln('\n[5/5] Result:');
         stdout.writeln(
-          'Route distance: '
+          '  Route distance: '
           '${(route.distanceMeters / 1000).toStringAsFixed(2)} km',
         );
-        stdout.writeln('Estimated travel time: ${route.duration}');
-        stdout.writeln('Route points: ${route.geometry.length}');
+        stdout.writeln('  Estimated travel time: ${route.duration}');
+        stdout.writeln('  Route points: ${route.geometry.length}');
+
+        stdout.writeln('\n=== Timing summary ===');
+        stdout.writeln(
+          '  Download:   ${_fmtDuration(downloadStopwatch.elapsed)}',
+        );
+        stdout.writeln(
+          '  Conversion: ${_fmtDuration(conversionStopwatch.elapsed)}',
+        );
+        stdout.writeln('  Storage:    ${_fmtDuration(storeStopwatch.elapsed)}');
+        stdout.writeln('  Routing:    ${_fmtDuration(routeStopwatch.elapsed)}');
+        stdout.writeln('  Total:      ${_fmtDuration(totalStopwatch.elapsed)}');
       },
       // The cold-cache download of a ~400 MB extract plus a full parse needs a
       // generous timeout.

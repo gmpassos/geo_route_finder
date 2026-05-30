@@ -67,8 +67,8 @@ Future<void> main() async {
   //   final downloader = OsmDownloader(outputDirectory: './maps');
   //   final pbf = await downloader.downloadRegion(
   //     region: 'south-america/brazil/sao-paulo',
-  //     onProgress: (got, total) => stdout.write(
-  //       '\r${(got / 1e6).toStringAsFixed(1)} MB'),
+  //     onProgress: (got, total, url) => stdout.write(
+  //       '\r$url: ${(got / 1e6).toStringAsFixed(1)} MB'),
   //   );
   //   await OsmConverter().convert(
   //     inputFile: pbf, storage: maps, graphId: 'sao_paulo');

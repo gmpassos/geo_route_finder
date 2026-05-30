@@ -41,6 +41,17 @@ export 'src/osm/osm_pbf_parser.dart' show OsmPbfParser;
 export 'src/osm/osm_converter.dart';
 export 'src/osm/osm_data_source.dart';
 
+// Pluggable OSM download sources (region -> downloadable URL) and the registry
+// that selects the best provider/mirror. The downloader is source-agnostic.
+export 'src/osm/download/osm_download_source.dart';
+export 'src/osm/download/osm_download_source_registry.dart';
+export 'src/osm/download/mirror_benchmark.dart';
+export 'src/osm/download/sources/pattern_download_source.dart';
+export 'src/osm/download/sources/geofabrik_source.dart';
+export 'src/osm/download/sources/osm_france_source.dart';
+export 'src/osm/download/sources/bbbike_source.dart';
+export 'src/osm/download/sources/planet_source.dart';
+
 // Graph compilation and optimization.
 export 'src/graph/graph_types.dart';
 export 'src/graph/graph_builder.dart';
