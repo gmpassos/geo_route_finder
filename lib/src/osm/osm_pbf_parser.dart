@@ -392,7 +392,11 @@ class _PbfReader {
         _pos += 8;
         break;
       case 2:
-        _pos += readVarint();
+        // Read the length first: `_pos += readVarint()` would capture the old
+        // `_pos` before readVarint() advances it past the length prefix, losing
+        // those bytes and desyncing the stream.
+        final len = readVarint();
+        _pos += len;
         break;
       case 5:
         _pos += 4;

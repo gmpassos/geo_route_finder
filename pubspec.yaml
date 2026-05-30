@@ -10,7 +10,7 @@ environment:
   sdk: ^3.10.9
 
 dependencies:
-  #path: any
+  path: ^1.9.0
 
 dev_dependencies:
   lints: ^6.1.0

@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:path/path.dart' as p;
+
 /// Progress callback: [received] bytes so far, [total] bytes expected (or `null`
 /// when the server does not report a length).
 typedef DownloadProgress = void Function(int received, int? total);
@@ -21,15 +23,18 @@ class OsmDownloader {
   final String baseUrl;
 
   /// Directory into which files are written.
-  final String outputDirectory;
+  final Directory outputDirectory;
 
   final HttpClient _client;
 
   OsmDownloader({
     this.baseUrl = 'https://download.geofabrik.de/',
-    this.outputDirectory = '.',
+    Directory? outputDirectory,
     HttpClient? client,
-  }) : _client = client ?? HttpClient();
+  }) : _client = client ?? HttpClient(),
+       outputDirectory =
+           outputDirectory ??
+           Directory(p.join(Directory.current.path, 'osm-cache'));
 
   /// Downloads the extract for [region] (e.g. `south-america/brazil/sao-paulo`)
   /// and returns the path to the completed file.
@@ -57,9 +62,9 @@ class OsmDownloader {
     DownloadProgress? onProgress,
     bool resume = true,
   }) async {
-    await Directory(outputDirectory).create(recursive: true);
+    await outputDirectory.create(recursive: true);
     final name = fileName ?? Uri.parse(url).pathSegments.last;
-    final dest = '$outputDirectory/$name';
+    final dest = p.join(outputDirectory.path, name);
     final partPath = '$dest.part';
     final metaPath = '$dest.dlmeta';
 
@@ -167,5 +172,6 @@ class OsmDownloader {
 class _DownloadCache {
   final String? etag;
   final String? lastModified;
+
   const _DownloadCache({this.etag, this.lastModified});
 }

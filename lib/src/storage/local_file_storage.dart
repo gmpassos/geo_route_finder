@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:path/path.dart' as p;
+
 import '../graph/graph_builder.dart';
 import '../model/geo_edge.dart';
 import '../model/geo_graph.dart';
@@ -42,9 +44,9 @@ class LocalFileStorage implements CompiledGraphStorage {
        _deserializer = deserializer;
 
   String _safe(String id) => id.replaceAll(RegExp(r'[\\/]'), '_');
-  String _graphPath(String id) => '$directory/${_safe(id)}.graph';
-  String _indexPath(String id) => '$directory/${_safe(id)}.index';
-  String _metaPath(String id) => '$directory/${_safe(id)}.meta';
+  String _graphPath(String id) => p.join(directory, '${_safe(id)}.graph');
+  String _indexPath(String id) => p.join(directory, '${_safe(id)}.index');
+  String _metaPath(String id) => p.join(directory, '${_safe(id)}.meta');
 
   @override
   Future<void> saveCompiled(String id, CompiledGraph compiled) async {
