@@ -69,7 +69,7 @@ void main() {
         stdout.writeln('Cache:  ${localDownloadCacheDirectory.path}');
 
         // 1. Download all OSM data covering the route area.
-        stdout.writeln('\n[1/5] Downloading extract...');
+        stdout.writeln('\n[1/6] Downloading extract...');
         final downloader = OsmDownloader(
           outputDirectory: localDownloadCacheDirectory,
         );
@@ -118,7 +118,7 @@ void main() {
         // 2. Convert the OSM extract into the package's internal format, and
         // 3. load it through the OSM data source. OsmDataSource performs the
         //    conversion via the OsmConverter it is given.
-        stdout.writeln('\n[2/5] Converting PBF to routing graph...');
+        stdout.writeln('\n[2/6] Converting PBF to routing graph...');
         final converter = OsmConverter();
         final dataSource = OsmDataSource(
           pbfFile: pbfPath,
@@ -145,18 +145,25 @@ void main() {
         );
 
         // Make the loaded graph routable by storing it under a graph id.
-        stdout.writeln('\n[3/5] Storing graph as "$graphId"...');
+        stdout.writeln('\n[3/6] Storing graph as "$graphId"...');
         final storage = MemoryStorage();
         final storeStopwatch = Stopwatch()..start();
         await storage.saveGraph(graphId, graph);
         storeStopwatch.stop();
         stdout.writeln('  Stored in ${_fmtDuration(storeStopwatch.elapsed)}');
 
-        // 4. Create a route finder instance.
-        stdout.writeln('\n[4/5] Routing Beiramar -> Villa Romana...');
+        // 4. Create a route finder instance and load its graph up front, so the
+        // load cost is measured separately from the routing query.
+        stdout.writeln('\n[4/6] Loading routing graph...');
         final router = AStarRouter(storage: storage, graphId: graphId);
 
+        final loadStopwatch = Stopwatch()..start();
+        await router.ensureLoaded();
+        loadStopwatch.stop();
+        stdout.writeln('  Loaded in ${_fmtDuration(loadStopwatch.elapsed)}');
+
         // 5. Calculate the shortest drivable route.
+        stdout.writeln('\n[5/6] Routing Beiramar -> Villa Romana...');
         final routeStopwatch = Stopwatch()..start();
         final route = await router.findRoute(
           beiramarShopping,
@@ -193,7 +200,7 @@ void main() {
 
         // 7. Debug output.
         totalStopwatch.stop();
-        stdout.writeln('\n[5/5] Result:');
+        stdout.writeln('\n[6/6] Result:');
         stdout.writeln(
           '  Route distance: '
           '${(route.distanceMeters / 1000).toStringAsFixed(2)} km',
@@ -209,6 +216,7 @@ void main() {
           '  Conversion: ${_fmtDuration(conversionStopwatch.elapsed)}',
         );
         stdout.writeln('  Storage:    ${_fmtDuration(storeStopwatch.elapsed)}');
+        stdout.writeln('  Load:       ${_fmtDuration(loadStopwatch.elapsed)}');
         stdout.writeln('  Routing:    ${_fmtDuration(routeStopwatch.elapsed)}');
         stdout.writeln('  Total:      ${_fmtDuration(totalStopwatch.elapsed)}');
       },
