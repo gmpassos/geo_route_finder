@@ -35,6 +35,50 @@ GeoGraph _chain(int len) {
   return GeoGraph(nodes: nodes, edges: edges);
 }
 
+/// A diamond A-D where a short, fast **toll** edge connects the endpoints
+/// directly and a longer, toll-free detour A-B-C-D also exists. With tolls
+/// allowed the direct edge wins; avoiding tolls must take the detour.
+GeoGraph _tollDiamond() {
+  final nodes = const [
+    GeoNode(id: 0, lat: 0, lon: 0), // A
+    GeoNode(id: 1, lat: 0.001, lon: 0.0007), // B
+    GeoNode(id: 2, lat: 0.001, lon: 0.0013), // C
+    GeoNode(id: 3, lat: 0, lon: 0.002), // D
+  ];
+  final edges = const [
+    GeoEdge(
+      sourceId: 0,
+      targetId: 3,
+      distanceMeters: 200,
+      speedKmh: 100,
+      tolls: 1,
+    ),
+    GeoEdge(sourceId: 0, targetId: 1, distanceMeters: 150, speedKmh: 100),
+    GeoEdge(sourceId: 1, targetId: 2, distanceMeters: 150, speedKmh: 100),
+    GeoEdge(sourceId: 2, targetId: 3, distanceMeters: 150, speedKmh: 100),
+  ];
+  return GeoGraph(nodes: nodes, edges: edges);
+}
+
+/// A and D joined only by a single toll edge — the avoid-tolls fallback case.
+GeoGraph _tollOnly() {
+  return GeoGraph(
+    nodes: const [
+      GeoNode(id: 0, lat: 0, lon: 0),
+      GeoNode(id: 3, lat: 0, lon: 0.002),
+    ],
+    edges: const [
+      GeoEdge(
+        sourceId: 0,
+        targetId: 3,
+        distanceMeters: 200,
+        speedKmh: 100,
+        tolls: 1,
+      ),
+    ],
+  );
+}
+
 /// Compiles [graph] into a [CompiledGraph], optionally compressing it. Mirrors
 /// what `OsmConverter.compile` does, so the compiled storage path can be tested
 /// with and without compression.
@@ -366,6 +410,57 @@ void main() {
         final router = _router(type, st, 'tri');
         expect((await router.findRoute(from, to)).found, isTrue, reason: type);
         expect((await router.findRoute(to, from)).found, isFalse, reason: type);
+      }
+    });
+  });
+
+  group('toll avoidance (all algorithms)', () {
+    late Directory dir;
+    late LocalFileStorage storage;
+
+    const a = GeoCoordinate(lat: 0, lon: 0);
+    const d = GeoCoordinate(lat: 0, lon: 0.002);
+
+    setUp(() {
+      dir = Directory.systemTemp.createTempSync('grf_toll_');
+      storage = LocalFileStorage(directory: dir.path);
+    });
+    tearDown(() => dir.deleteSync(recursive: true));
+
+    test('avoidTolls takes the toll-free detour when one exists', () async {
+      // Stored uncompressed so the diamond's endpoints are not contracted away.
+      await storage.saveCompiled(
+        'd',
+        _compile(_tollDiamond(), compress: false),
+      );
+      for (final type in _routerTypes) {
+        final normal = await _router(type, storage, 'd').findRoute(a, d);
+        final free = await _router(
+          type,
+          storage,
+          'd',
+        ).findRoute(a, d, avoidTolls: true);
+        // Direct toll edge is fastest normally; avoiding tolls detours.
+        expect(normal.distanceMeters, closeTo(200, 1e-6), reason: type);
+        expect(free.distanceMeters, closeTo(450, 1e-6), reason: type);
+        // The fastest route crosses the single toll; the detour is toll-free.
+        expect(normal.tollCount, 1, reason: type);
+        expect(normal.hasTolls, isTrue, reason: type);
+        expect(free.tollCount, 0, reason: type);
+        expect(free.hasTolls, isFalse, reason: type);
+      }
+    });
+
+    test('avoidTolls falls back to a tolled route when unavoidable', () async {
+      await storage.saveCompiled('o', _compile(_tollOnly(), compress: false));
+      for (final type in _routerTypes) {
+        final free = await _router(
+          type,
+          storage,
+          'o',
+        ).findRoute(a, d, avoidTolls: true);
+        expect(free.found, isTrue, reason: type);
+        expect(free.distanceMeters, closeTo(200, 1e-6), reason: type);
       }
     });
   });

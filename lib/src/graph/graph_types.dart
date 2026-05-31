@@ -40,6 +40,11 @@ class RoutingGraph {
   /// Ground distance of each edge in meters, length [edgeCount].
   final Float64List adjDist;
 
+  /// Number of toll sections on each edge (`0` = free), length [edgeCount].
+  /// Counts accumulate when degree-2 chains are collapsed. Consulted at query
+  /// time when a route is asked to avoid tolls and to report its toll count.
+  final Uint8List adjToll;
+
   /// Per-edge intermediate geometry, interleaved `lat, lon` pairs. The points
   /// for edge `e` are `[geomOffset[e], geomOffset[e+1])` measured in *points*
   /// (each point being two consecutive doubles in [geomCoords]). Endpoints are
@@ -57,12 +62,19 @@ class RoutingGraph {
     required this.adjTarget,
     required this.adjTime,
     required this.adjDist,
+    required this.adjToll,
     required this.geomCoords,
     required this.geomOffset,
   });
 
   int get nodeCount => lat.length;
   int get edgeCount => adjTarget.length;
+
+  /// Number of toll sections on edge [e].
+  int tollsOf(int e) => adjToll[e];
+
+  /// Whether edge [e] crosses at least one toll.
+  bool isToll(int e) => adjToll[e] != 0;
 
   /// Coordinate of vertex [v].
   GeoCoordinate coordinateOf(int v) => GeoCoordinate(lat: lat[v], lon: lon[v]);

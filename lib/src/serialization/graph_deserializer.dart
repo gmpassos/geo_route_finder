@@ -74,6 +74,12 @@ class GraphDeserializer {
       return v;
     }
 
+    Uint8List takeU8(int len) {
+      final v = bytes.buffer.asUint8List(off, len);
+      off += len;
+      return v;
+    }
+
     final lat = takeF64(n);
     final lon = takeF64(n);
     final originalId = takeI64(n);
@@ -83,6 +89,7 @@ class GraphDeserializer {
     final adjOffset = takeI32(n + 1);
     final adjTarget = takeI32(m);
     final geomOffset = takeI32(m + 1);
+    final adjToll = takeU8(m);
 
     return RoutingGraph(
       lat: lat,
@@ -92,6 +99,7 @@ class GraphDeserializer {
       adjTarget: adjTarget,
       adjTime: adjTime,
       adjDist: adjDist,
+      adjToll: adjToll,
       geomCoords: geomCoords,
       geomOffset: geomOffset,
     );

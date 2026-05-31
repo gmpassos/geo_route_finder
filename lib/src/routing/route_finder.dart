@@ -17,7 +17,15 @@ import 'priority_queue.dart';
 abstract interface class RouteFinder {
   /// Computes the fastest route from [start] to [end]. Returns
   /// [GeoRoute.none] when no connecting path exists.
-  Future<GeoRoute> findRoute(GeoCoordinate start, GeoCoordinate end);
+  ///
+  /// When [avoidTolls] is `true`, toll roads are strongly penalized so a
+  /// toll-free route is preferred; a tolled route is still returned when the
+  /// destination cannot be reached otherwise.
+  Future<GeoRoute> findRoute(
+    GeoCoordinate start,
+    GeoCoordinate end, {
+    bool avoidTolls = false,
+  });
 
   /// Computes the fastest route and, optionally, a number of *alternative*
   /// routes between [start] and [end].
@@ -41,6 +49,8 @@ abstract interface class RouteFinder {
   /// * [maxSharing] — an alternative is discarded if more than this fraction of
   ///   its length overlaps routes already chosen, keeping alternatives
   ///   genuinely distinct. `0.8` allows up to 80% shared length.
+  /// * [avoidTolls] — when `true`, toll roads are strongly penalized so toll-free
+  ///   routes are preferred; tolled segments are used only when unavoidable.
   Future<List<GeoRoute>> findRoutes(
     GeoCoordinate start,
     GeoCoordinate end, {
@@ -48,6 +58,7 @@ abstract interface class RouteFinder {
     double maxExtraRatio = 0.3,
     double? maxExtraMeters,
     double maxSharing = 0.8,
+    bool avoidTolls = false,
   });
 }
 
@@ -168,8 +179,12 @@ abstract class GraphRouteFinder implements RouteFinder {
   RawPath search(int source, int target);
 
   @override
-  Future<GeoRoute> findRoute(GeoCoordinate start, GeoCoordinate end) async {
-    final routes = await findRoutes(start, end);
+  Future<GeoRoute> findRoute(
+    GeoCoordinate start,
+    GeoCoordinate end, {
+    bool avoidTolls = false,
+  }) async {
+    final routes = await findRoutes(start, end, avoidTolls: avoidTolls);
     return routes.isEmpty ? GeoRoute.none : routes.first;
   }
 
@@ -181,6 +196,7 @@ abstract class GraphRouteFinder implements RouteFinder {
     double maxExtraRatio = 0.3,
     double? maxExtraMeters,
     double maxSharing = 0.8,
+    bool avoidTolls = false,
   }) async {
     await ensureLoaded();
 
@@ -195,7 +211,13 @@ abstract class GraphRouteFinder implements RouteFinder {
       ];
     }
 
-    final best = search(s.node, t.node);
+    // When avoiding tolls, route over a Dijkstra whose weights heavily penalize
+    // toll edges (uniform across every router, including CH whose baked
+    // shortcuts cannot be re-weighted). Otherwise use the router's own search().
+    final basePenalty = avoidTolls ? _tollPenalty() : null;
+    final best = basePenalty != null
+        ? _penalizedSearch(s.node, t.node, basePenalty)
+        : search(s.node, t.node);
     if (!best.found) return const [];
 
     if (maxRoutes <= 1) return [buildRoute(best)];
@@ -208,8 +230,25 @@ abstract class GraphRouteFinder implements RouteFinder {
       maxExtraRatio: maxExtraRatio,
       maxExtraMeters: maxExtraMeters,
       maxSharing: maxSharing,
+      basePenalty: basePenalty,
     );
     return paths.map(buildRoute).toList();
+  }
+
+  /// Multiplier applied to a toll edge's travel time when [findRoutes] is asked
+  /// to avoid tolls. Large but finite, so a tolled segment is taken only when no
+  /// toll-free path exists (hard-avoid with fallback).
+  static const double _tollPenaltyFactor = 1e6;
+
+  /// Builds a per-edge penalty array seeded to [_tollPenaltyFactor] on toll
+  /// edges and `1.0` elsewhere.
+  Float64List _tollPenalty() {
+    final g = graph;
+    final p = Float64List(g.edgeCount)..fillRange(0, g.edgeCount, 1.0);
+    for (var e = 0; e < g.edgeCount; e++) {
+      if (g.adjToll[e] != 0) p[e] = _tollPenaltyFactor;
+    }
+    return p;
   }
 
   /// Penalty multiplier applied to the edges of an accepted (or too-similar)
@@ -231,12 +270,17 @@ abstract class GraphRouteFinder implements RouteFinder {
     required double maxExtraRatio,
     required double? maxExtraMeters,
     required double maxSharing,
+    Float64List? basePenalty,
   }) {
     final g = graph;
     final accepted = <RawPath>[best];
     final usedEdges = <int>{...best.edges};
 
-    final penalty = Float64List(g.edgeCount)..fillRange(0, g.edgeCount, 1.0);
+    // Start from the toll-avoidance seed when present, so alternatives also
+    // steer clear of toll roads; otherwise from a neutral all-ones array.
+    final penalty = basePenalty != null
+        ? Float64List.fromList(basePenalty)
+        : (Float64List(g.edgeCount)..fillRange(0, g.edgeCount, 1.0));
     _penalize(penalty, best.edges);
 
     var maxDist = best.distanceMeters * (1 + maxExtraRatio);
@@ -344,14 +388,18 @@ abstract class GraphRouteFinder implements RouteFinder {
     final geometry = <GeoCoordinate>[];
     final g = graph;
     geometry.add(g.coordinateOf(path.vertices.first));
+    var tollCount = 0;
     for (var i = 0; i < path.edges.length; i++) {
-      geometry.addAll(g.geometryOf(path.edges[i]));
+      final e = path.edges[i];
+      tollCount += g.adjToll[e];
+      geometry.addAll(g.geometryOf(e));
       geometry.add(g.coordinateOf(path.vertices[i + 1]));
     }
     return GeoRoute(
       distanceMeters: path.distanceMeters,
       duration: Duration(microseconds: (path.timeSeconds * 1e6).round()),
       geometry: geometry,
+      tollCount: tollCount,
     );
   }
 

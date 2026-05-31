@@ -4,7 +4,10 @@ import '../graph/graph_types.dart';
 import '../spatial/kd_tree.dart';
 
 /// On-disk format version. Bump on any breaking layout change.
-const int kGraphFormatVersion = 1;
+///
+/// v2 added the per-edge `adjToll` array (one byte per directed edge), appended
+/// after the existing 8- and 4-byte arrays to preserve their alignment.
+const int kGraphFormatVersion = 2;
 
 /// `'GRF1'` magic for the `.graph` payload.
 const int _graphMagic0 = 0x47; // G
@@ -41,7 +44,8 @@ class GraphSerializer {
     const header = 24;
     final f64Bytes = 8 * (3 * n + 2 * m + 2 * gp);
     final i32Bytes = 4 * ((n + 1) + m + (m + 1));
-    final total = header + f64Bytes + i32Bytes;
+    final u8Bytes = m; // adjToll, one byte per edge
+    final total = header + f64Bytes + i32Bytes + u8Bytes;
 
     final out = Uint8List(total);
     final bd = ByteData.view(out.buffer);
@@ -80,6 +84,9 @@ class GraphSerializer {
     putI32(g.adjOffset);
     putI32(g.adjTarget);
     putI32(g.geomOffset);
+    // 1-byte array last so the 8- and 4-byte arrays above stay aligned.
+    out.setRange(off, off + g.adjToll.length, g.adjToll);
+    off += g.adjToll.length;
 
     return out;
   }

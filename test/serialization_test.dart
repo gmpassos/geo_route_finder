@@ -29,8 +29,33 @@ void main() {
       expect(back.adjTarget, graph.adjTarget);
       expect(back.adjTime, graph.adjTime);
       expect(back.adjDist, graph.adjDist);
+      expect(back.adjToll, graph.adjToll);
       expect(back.geomOffset, graph.geomOffset);
       expect(back.geomCoords, graph.geomCoords);
+    });
+
+    test('round-trips per-edge toll flags', () {
+      // A 3-node chain whose single original edge is a toll road.
+      final nodes = [
+        for (var i = 0; i < 3; i++) GeoNode(id: i, lat: 0, lon: i * 0.001),
+      ];
+      final edges = [
+        for (var i = 0; i < 2; i++)
+          GeoEdge(
+            sourceId: i,
+            targetId: i + 1,
+            distanceMeters: 111,
+            speedKmh: 50,
+            tolls: 1,
+          ),
+      ];
+      final tolled = const GraphBuilder().build(
+        GeoGraph(nodes: nodes, edges: edges),
+      );
+      final bytes = const GraphSerializer().serializeGraph(tolled);
+      final back = const GraphDeserializer().deserializeGraph(bytes);
+      expect(back.adjToll, tolled.adjToll);
+      expect(back.adjToll.any((t) => t != 0), isTrue);
     });
 
     test('serialization is deterministic', () {

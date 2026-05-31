@@ -93,6 +93,7 @@ class GraphBuilder {
     final tgt = Int32List(m);
     final dist = Float64List(m);
     final time = Float64List(m);
+    final toll = Uint8List(m);
     final edgeRef = Int32List(m);
     final reversed = Uint8List(m);
     var k = 0;
@@ -101,10 +102,12 @@ class GraphBuilder {
       final s = indexOf[e.sourceId];
       final t = indexOf[e.targetId];
       if (s == null || t == null) continue;
+      final tollCount = e.tolls;
       src[k] = s;
       tgt[k] = t;
       dist[k] = e.distanceMeters;
       time[k] = e.travelTimeSeconds;
+      toll[k] = tollCount;
       edgeRef[k] = ei;
       reversed[k] = 0;
       k++;
@@ -113,6 +116,7 @@ class GraphBuilder {
         tgt[k] = s;
         dist[k] = e.distanceMeters;
         time[k] = e.travelTimeSeconds;
+        toll[k] = tollCount;
         edgeRef[k] = ei;
         reversed[k] = 1;
         k++;
@@ -168,6 +172,7 @@ class GraphBuilder {
     final adjTarget = Int32List(m);
     final adjTime = Float64List(m);
     final adjDist = Float64List(m);
+    final adjToll = Uint8List(m);
     final geomOffset = Int32List(m + 1);
     final geomCoords = Float64List(totalPoints * 2);
 
@@ -178,6 +183,7 @@ class GraphBuilder {
       adjTarget[i] = tgt[d];
       adjTime[i] = time[d];
       adjDist[i] = dist[d];
+      adjToll[i] = toll[d];
       geomOffset[i] = point;
 
       final shape = inEdges[edgeRef[d]].shapePoints;
@@ -213,6 +219,7 @@ class GraphBuilder {
       adjTarget: adjTarget,
       adjTime: adjTime,
       adjDist: adjDist,
+      adjToll: adjToll,
       geomCoords: geomCoords,
       geomOffset: geomOffset,
     );

@@ -20,6 +20,11 @@ class GeoEdge {
   /// Whether travel is only permitted from [sourceId] to [targetId].
   final bool oneWay;
 
+  /// Number of toll sections along the segment (`0` for a free road). Carried
+  /// through to the routing graph and accumulated when degree-2 chains are
+  /// collapsed, so a route can report and avoid tolls.
+  final int tolls;
+
   /// Optional intermediate geometry, expressed as node ids that lie between
   /// [sourceId] and [targetId]. Empty for a straight segment. These points are
   /// purely cosmetic for the routing graph (they are collapsed away) but are
@@ -32,6 +37,7 @@ class GeoEdge {
     required this.distanceMeters,
     required this.speedKmh,
     this.oneWay = false,
+    this.tolls = 0,
     this.shapePoints = const [],
   });
 
@@ -43,8 +49,11 @@ class GeoEdge {
     return distanceMeters / (speedKmh * (1000.0 / 3600.0));
   }
 
+  /// Whether the segment crosses at least one toll.
+  bool get hasToll => tolls > 0;
+
   @override
   String toString() =>
       'GeoEdge($sourceId -> $targetId, ${distanceMeters.toStringAsFixed(1)}m, '
-      '${speedKmh.toStringAsFixed(0)}km/h, oneWay: $oneWay)';
+      '${speedKmh.toStringAsFixed(0)}km/h, oneWay: $oneWay, tolls: $tolls)';
 }

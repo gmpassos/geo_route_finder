@@ -173,6 +173,7 @@ class GraphCompressor {
         var cur = g.adjTarget[e];
         var dist = g.adjDist[e];
         var time = g.adjTime[e];
+        var tolls = g.adjToll[e];
         final geom = <GeoCoordinate>[...g.geometryOf(e)];
 
         while (contractible[cur] && cur != a) {
@@ -182,12 +183,13 @@ class GraphCompressor {
           prev = cur;
           dist += g.adjDist[nextEdge];
           time += g.adjTime[nextEdge];
+          tolls += g.adjToll[nextEdge];
           geom.addAll(g.geometryOf(nextEdge));
           cur = g.adjTarget[nextEdge];
         }
 
         if (cur == a) continue; // drop self-loops
-        merged.add(_MergedEdge(a, cur, dist, time, geom));
+        merged.add(_MergedEdge(a, cur, dist, time, tolls, geom));
       }
     }
 
@@ -252,6 +254,7 @@ class GraphCompressor {
     final adjTarget = Int32List(em);
     final adjTime = Float64List(em);
     final adjDist = Float64List(em);
+    final adjToll = Uint8List(em);
     final geomOffset = Int32List(em + 1);
     final geomBuilder = <double>[];
     for (var i = 0; i < em; i++) {
@@ -259,6 +262,7 @@ class GraphCompressor {
       adjTarget[i] = m.newTarget;
       adjTime[i] = m.time;
       adjDist[i] = m.dist;
+      adjToll[i] = m.tolls;
       geomOffset[i] = geomBuilder.length ~/ 2;
       for (final c in m.geometry) {
         geomBuilder.add(c.lat);
@@ -275,6 +279,7 @@ class GraphCompressor {
       adjTarget: adjTarget,
       adjTime: adjTime,
       adjDist: adjDist,
+      adjToll: adjToll,
       geomCoords: Float64List.fromList(geomBuilder),
       geomOffset: geomOffset,
     );
@@ -294,8 +299,16 @@ class _MergedEdge {
   final int target;
   final double dist;
   final double time;
+  final int tolls;
   final List<GeoCoordinate> geometry;
   int newSource = 0;
   int newTarget = 0;
-  _MergedEdge(this.source, this.target, this.dist, this.time, this.geometry);
+  _MergedEdge(
+    this.source,
+    this.target,
+    this.dist,
+    this.time,
+    this.tolls,
+    this.geometry,
+  );
 }

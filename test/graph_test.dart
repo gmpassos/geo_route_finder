@@ -106,4 +106,55 @@ void main() {
       expect(c.lastStats!.nodesBefore, 100);
     });
   });
+
+  group('toll propagation', () {
+    test('GraphBuilder flags both directions of a toll edge', () {
+      final nodes = [
+        const GeoNode(id: 1, lat: 0, lon: 0),
+        const GeoNode(id: 2, lat: 0, lon: 0.001),
+      ];
+      final edges = [
+        const GeoEdge(
+          sourceId: 1,
+          targetId: 2,
+          distanceMeters: 111,
+          speedKmh: 50,
+          tolls: 1,
+        ),
+      ];
+      final g = const GraphBuilder().build(
+        GeoGraph(nodes: nodes, edges: edges),
+      );
+      // Bidirectional -> 2 directed edges, both tolled.
+      expect(g.edgeCount, 2);
+      expect(g.isToll(0), isTrue);
+      expect(g.isToll(1), isTrue);
+      expect(g.tollsOf(0), 1);
+    });
+
+    test('a compressed chain sums the toll counts of its segments', () {
+      // 5-node chain; segments 0->1 and 2->3 are toll roads (two tolls total).
+      final nodes = [
+        for (var i = 0; i < 5; i++) GeoNode(id: i, lat: 0, lon: i * 0.001),
+      ];
+      final edges = [
+        for (var i = 0; i < 4; i++)
+          GeoEdge(
+            sourceId: i,
+            targetId: i + 1,
+            distanceMeters: 111,
+            speedKmh: 50,
+            tolls: (i == 0 || i == 2) ? 1 : 0,
+          ),
+      ];
+      final compressed = GraphCompressor().compress(
+        const GraphBuilder().build(GeoGraph(nodes: nodes, edges: edges)),
+      );
+      expect(compressed.edgeCount, 2);
+      // The merged chain accumulates the toll count of every collapsed segment.
+      expect(compressed.isToll(0), isTrue);
+      expect(compressed.tollsOf(0), 2);
+      expect(compressed.tollsOf(1), 2);
+    });
+  });
 }

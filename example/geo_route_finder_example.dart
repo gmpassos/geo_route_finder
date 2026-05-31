@@ -142,21 +142,43 @@ Future<void> runOsmExample(List<String> args) async {
   );
   stdout.writeln();
 
-  // 2. Convert the raw OSM PBF into a routing graph: select drivable ways,
+  // 2. Convert the raw OSM PBF into a routing graph: select routable ways,
   //    infer speeds, build the topology and spatial index, then store it
-  //    compressed under `graphId`. This is the expensive step for a big region.
-  final graphId = region.split('/').last; // e.g. "sao-paulo"
-  print('Converting to graph "$graphId" …');
-  await OsmConverter().convert(
-    inputFile: pbf,
-    storage: storage,
-    graphId: graphId,
+  //    compressed under `graphId`. Each vehicle profile routes over a different
+  //    network (a bicycle uses cycleways but not motorways, ignores car one-way
+  //    rules, …), so we build and store one graph per profile.
+  final base = region.split('/').last; // e.g. "sao-paulo"
+  for (final profile in [VehicleProfile.car, VehicleProfile.bicycle]) {
+    final graphId = '${base}_${profile.name}';
+    print('Converting to graph "$graphId" (${profile.name}) …');
+    await OsmConverter(
+      profile: profile,
+    ).convert(inputFile: pbf, storage: storage, graphId: graphId);
+  }
+
+  // 3. Route across each stored graph, exactly as in the grid demo above.
+  final carRouter = AStarRouter(storage: storage, graphId: '${base}_car');
+  printRoute(
+    'car',
+    await carRouter.findRoute(start, end),
+    carRouter.lastExpandedNodes,
   );
 
-  // 3. Route across the stored graph, exactly as in the grid demo above.
-  final router = AStarRouter(storage: storage, graphId: graphId);
-  final route = await router.findRoute(start, end);
-  printRoute('A*', route, router.lastExpandedNodes);
+  // The same car query, but avoiding toll roads. Toll segments are heavily
+  // penalized, so a toll-free route is preferred; a tolled route is still
+  // returned when the destination cannot be reached any other way.
+  printRoute(
+    'car (no toll)',
+    await carRouter.findRoute(start, end, avoidTolls: true),
+    carRouter.lastExpandedNodes,
+  );
+
+  final bikeRouter = AStarRouter(storage: storage, graphId: '${base}_bicycle');
+  printRoute(
+    'bicycle',
+    await bikeRouter.findRoute(start, end),
+    bikeRouter.lastExpandedNodes,
+  );
 }
 
 /// Builds a 10x10 lat/lon grid of intersections joined by 50 km/h roads,

@@ -24,6 +24,11 @@
 /// print(route.distanceMeters);
 /// print(route.duration);
 /// ```
+///
+/// Pass a [VehicleProfile] (car, motorcycle, bicycle) to [OsmConverter] to build
+/// a graph for that mode — each profile routes over a different network, so build
+/// and store one graph per profile. Toll segments are flagged during conversion,
+/// and any query can avoid them with `findRoute(start, end, avoidTolls: true)`.
 library;
 
 // Model — the normalized, data-source-agnostic types.
@@ -40,6 +45,7 @@ export 'src/osm/osm_downloader.dart';
 export 'src/osm/osm_pbf_parser.dart' show OsmPbfParser;
 export 'src/osm/osm_converter.dart';
 export 'src/osm/osm_data_source.dart';
+export 'src/osm/vehicle_profile.dart';
 
 // Pluggable OSM download sources (region -> downloadable URL) and the registry
 // that selects the best provider/mirror. The downloader is source-agnostic.
