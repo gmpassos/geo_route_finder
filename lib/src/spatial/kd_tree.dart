@@ -39,7 +39,24 @@ class KdTree {
   /// Cosine of the reference latitude used to project longitudes.
   final double cosRef;
 
-  KdTree._(this._g, this.order, this.cosRef);
+  /// Projected vertex coordinates in meters (equirectangular), indexed by vertex
+  /// index. Precomputing the projection once avoids repeating the multiply on
+  /// every comparison during the build and on every distance test during a
+  /// query, which is the dominant cost when indexing a regional graph.
+  final Float64List _px;
+  final Float64List _py;
+
+  KdTree._(this._g, this.order, this.cosRef)
+    : _px = _project(_g.lon, _mPerDeg * cosRef),
+      _py = _project(_g.lat, _mPerDeg);
+
+  static Float64List _project(Float64List src, double scale) {
+    final out = Float64List(src.length);
+    for (var i = 0; i < src.length; i++) {
+      out[i] = src[i] * scale;
+    }
+    return out;
+  }
 
   /// Builds a balanced KD-tree over every vertex of [g].
   factory KdTree.build(RoutingGraph g) {
@@ -64,8 +81,8 @@ class KdTree {
   factory KdTree.fromOrder(RoutingGraph g, Int32List order, double cosRef) =>
       KdTree._(g, order, cosRef);
 
-  double _x(int i) => _g.lon[i] * _mPerDeg * cosRef;
-  double _y(int i) => _g.lat[i] * _mPerDeg;
+  double _x(int i) => _px[i];
+  double _y(int i) => _py[i];
 
   void _build(int lo, int hi, int depth) {
     if (hi - lo <= 1) return;

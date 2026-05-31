@@ -1,4 +1,5 @@
 import '../graph/graph_builder.dart';
+import '../graph/graph_compressor.dart';
 import '../graph/graph_types.dart';
 import '../model/geo_coordinate.dart';
 import '../model/geo_route.dart';
@@ -99,7 +100,14 @@ abstract class GraphRouteFinder implements RouteFinder {
       if (geo == null) {
         throw StateError('No graph stored under id "$graphId".');
       }
-      final built = const GraphBuilder().build(geo);
+      // Compress degree-2 chains before indexing and routing, mirroring the
+      // compiled path (OsmConverter.compile). Without this the KD-tree and the
+      // search run over the full uncompressed vertex set (one vertex per source
+      // node, ~10x larger), which dominates the cost of loading a graph from a
+      // generic GeoStorage.
+      final built = GraphCompressor().compress(
+        const GraphBuilder().build(geo),
+      );
       _graph = built;
       _search = NearestNodeSearch(built, KdTree.build(built));
     }
