@@ -1,5 +1,15 @@
 # geo_route_finder
 
+[![pub package](https://img.shields.io/pub/v/geo_route_finder.svg?logo=dart&logoColor=00b9fc)](https://pub.dev/packages/geo_route_finder)
+[![Null Safety](https://img.shields.io/badge/null-safety-brightgreen)](https://dart.dev/null-safety)
+[![Dart CI](https://github.com/gmpassos/geo_route_finder/actions/workflows/dart.yml/badge.svg?branch=master)](https://github.com/gmpassos/geo_route_finder/actions/workflows/dart.yml)
+[![GitHub Tag](https://img.shields.io/github/v/tag/gmpassos/geo_route_finder?logo=git&logoColor=white)](https://github.com/gmpassos/geo_route_finder/releases)
+[![New Commits](https://img.shields.io/github/commits-since/gmpassos/geo_route_finder/latest?logo=git&logoColor=white)](https://github.com/gmpassos/geo_route_finder/network)
+[![Last Commits](https://img.shields.io/github/last-commit/gmpassos/geo_route_finder?logo=git&logoColor=white)](https://github.com/gmpassos/geo_route_finder/commits/master)
+[![Pull Requests](https://img.shields.io/github/issues-pr/gmpassos/geo_route_finder?logo=github&logoColor=white)](https://github.com/gmpassos/geo_route_finder/pulls)
+[![Code size](https://img.shields.io/github/languages/code-size/gmpassos/geo_route_finder?logo=github&logoColor=white)](https://github.com/gmpassos/geo_route_finder)
+[![License](https://img.shields.io/github/license/gmpassos/geo_route_finder?logo=open-source-initiative&logoColor=green)](https://github.com/gmpassos/geo_route_finder/blob/master/LICENSE)
+
 A high-performance, **data-source-agnostic**, **offline-first** routing engine
 written in **pure Dart**. It computes routes between geographic coordinates over
 road graphs that can come from any data source and be persisted in any storage
@@ -9,6 +19,12 @@ not coupled to it.
 Runs anywhere Dart runs (server, CLI, desktop, mobile, Flutter — any non-web
 target, since it uses `dart:io` for files and networking). **No runtime
 dependencies.**
+
+## API Documentation
+
+See the [API Documentation][api_doc] for a full list of functions, classes and extensions.
+
+[api_doc]: https://pub.dev/documentation/geo_route_finder/latest/
 
 ## Features
 
@@ -53,13 +69,15 @@ dependencies:
 ### Build and route from OpenStreetMap
 
 ```dart
+import 'dart:io';
+
 import 'package:geo_route_finder/geo_route_finder.dart';
 
 Future<void> main() async {
   final storage = LocalFileStorage(directory: './maps');
 
   // 1. Download an extract (resumable, cache-aware).
-  final downloader = OsmDownloader(outputDirectory: './maps');
+  final downloader = OsmDownloader(outputDirectory: Directory('./maps'));
   final pbf = await downloader.downloadRegion(
     region: 'south-america/brazil/sao-paulo',
     onProgress: (got, total, url) =>
@@ -195,9 +213,48 @@ dart test
 dart run benchmark/route_benchmark.dart
 ```
 
+## Source
+
+The official source code is [hosted @ GitHub][github_repo]:
+
+- https://github.com/gmpassos/geo_route_finder
+
+[github_repo]: https://github.com/gmpassos/geo_route_finder
+
+# Features and bugs
+
+Please file feature requests and bugs at the [issue tracker][tracker].
+
+# Contribution
+
+Any help from the open-source community is always welcome and needed:
+
+- Found an issue?
+    - Please fill a bug report with details.
+- Wish a feature?
+    - Open a feature request with use cases.
+- Are you using and liking the project?
+    - Promote the project: create an article, do a post or make a donation.
+- Are you a developer?
+    - Fix a bug and send a pull request.
+    - Implement a new feature.
+    - Improve the Unit Tests.
+- Have you already helped in any way?
+    - **Many thanks from me, the contributors and everybody that uses this project!**
+
+*If you donate 1 hour of your time, you can contribute a lot,
+because others will do the same, just be part and start with your 1 hour.*
+
+[tracker]: https://github.com/gmpassos/geo_route_finder/issues
+
+# Author
+
+Graciliano M. Passos: [gmpassos@GitHub][github].
+
+[github]: https://github.com/gmpassos
+
 ## License
 
 [Apache License - Version 2.0][apache_license]
 
 [apache_license]: https://www.apache.org/licenses/LICENSE-2.0.txt
-
