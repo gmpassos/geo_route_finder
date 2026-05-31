@@ -54,6 +54,11 @@ class OsmDownloader {
   /// URLs; each is attempted in turn until one succeeds. Throws an
   /// [OsmSourceException] when no source can serve the region or when every
   /// candidate fails.
+  ///
+  /// The saved file name is derived deterministically from the [region] and the
+  /// producing source's id (see [regionFileName]) rather than from the URL's
+  /// last path segment, so distinct regions — or the same region served by
+  /// different providers — never collide on disk.
   Future<String> downloadRegion({
     required String region,
     DownloadProgress? onProgress,
@@ -71,6 +76,7 @@ class OsmDownloader {
       try {
         return await downloadUrl(
           candidate.uri.toString(),
+          fileName: regionFileName(region, candidate),
           onProgress: onProgress,
           resume: resume,
         );
@@ -187,6 +193,40 @@ class OsmDownloader {
     if (await destFile.exists()) await destFile.delete();
     await partFile.rename(dest);
     return dest;
+  }
+
+  /// Builds the deterministic, collision-free file name used to store a
+  /// downloaded [region] served by [candidate].
+  ///
+  /// The name encodes the region path and the producing source's id, then
+  /// preserves the original URL file extension. Two different regions, or the
+  /// same region served by different providers, therefore map to distinct
+  /// files, while mirrors of the same source/region intentionally share one
+  /// file. Format:
+  ///
+  ///     <sanitized-region>.<sanitized-source-id><original-extension>
+  ///
+  /// e.g. region `south-america/brazil/sao-paulo` from source `geofabrik`
+  /// resolving to `…/sao-paulo-latest.osm.pbf` →
+  /// `south-america_brazil_sao-paulo.geofabrik.osm.pbf`.
+  static String regionFileName(String region, OsmDownloadCandidate candidate) {
+    final regionPart = _sanitize(region);
+    final sourcePart = _sanitize(candidate.sourceId);
+    return '$regionPart.$sourcePart${_extension(candidate.uri)}';
+  }
+
+  /// Replaces every character outside `[A-Za-z0-9-]` with `_` so the result is
+  /// safe to use as a single file-name segment on all platforms.
+  static String _sanitize(String value) =>
+      value.replaceAll(RegExp(r'[^A-Za-z0-9-]+'), '_');
+
+  /// The (possibly compound, e.g. `.osm.pbf`) extension of [uri]'s last path
+  /// segment, or `''` when it has none.
+  static String _extension(Uri uri) {
+    final segments = uri.pathSegments;
+    final last = segments.isEmpty ? '' : segments.last;
+    final dot = last.indexOf('.');
+    return dot < 0 ? '' : last.substring(dot);
   }
 
   Future<_DownloadCache?> _readCache(String path) async {
