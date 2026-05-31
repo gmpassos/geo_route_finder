@@ -105,9 +105,7 @@ abstract class GraphRouteFinder implements RouteFinder {
       // search run over the full uncompressed vertex set (one vertex per source
       // node, ~10x larger), which dominates the cost of loading a graph from a
       // generic GeoStorage.
-      final built = GraphCompressor().compress(
-        const GraphBuilder().build(geo),
-      );
+      final built = GraphCompressor().compress(const GraphBuilder().build(geo));
       _graph = built;
       _search = NearestNodeSearch(built, KdTree.build(built));
     }
