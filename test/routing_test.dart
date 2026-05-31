@@ -161,6 +161,137 @@ void main() {
     });
   });
 
+  group('top-k / alternative routes (all algorithms)', () {
+    late MemoryStorage st;
+    // Opposite corners of the grid: many equal-cost Manhattan paths exist, so
+    // alternatives are plentiful.
+    const start = GeoCoordinate(lat: -23.49, lon: -46.69); // node (1, 1)
+    const end = GeoCoordinate(lat: -23.40, lon: -46.60); // node (10, 10)
+
+    setUp(() async {
+      st = MemoryStorage();
+      await st.saveGraph('grid', buildGrid(n: 12));
+    });
+
+    test('default returns exactly the single optimal route', () async {
+      for (final type in _routerTypes) {
+        final router = _router(type, st, 'grid');
+        final single = await router.findRoute(start, end);
+        final routes = await router.findRoutes(start, end);
+        expect(routes.length, 1, reason: type);
+        expect(
+          routes.first.distanceMeters,
+          closeTo(single.distanceMeters, 1e-6),
+          reason: type,
+        );
+      }
+    });
+
+    test('returns up to maxRoutes distinct routes, optimal first', () async {
+      for (final type in _routerTypes) {
+        final router = _router(type, st, 'grid');
+        final best = await router.findRoute(start, end);
+        final routes = await router.findRoutes(start, end, maxRoutes: 3);
+
+        expect(routes.length, greaterThan(1), reason: type);
+        expect(routes.length, lessThanOrEqualTo(3), reason: type);
+        // Element 0 is the optimal route.
+        expect(
+          routes.first.distanceMeters,
+          closeTo(best.distanceMeters, 1e-6),
+          reason: type,
+        );
+        // No alternative is shorter than the optimal; ordered by distance.
+        for (var i = 1; i < routes.length; i++) {
+          expect(
+            routes[i].distanceMeters,
+            greaterThanOrEqualTo(routes[i - 1].distanceMeters - 1e-6),
+            reason: '$type [$i]',
+          );
+        }
+        // Routes are genuinely distinct geometries.
+        final shapes = routes
+            .map((r) => r.geometry.map((c) => '${c.lat},${c.lon}').join('|'))
+            .toSet();
+        expect(shapes.length, routes.length, reason: '$type distinct');
+      }
+    });
+
+    test('respects the maximum extra distance', () async {
+      for (final type in _routerTypes) {
+        final router = _router(type, st, 'grid');
+        final best = await router.findRoute(start, end);
+        final routes = await router.findRoutes(
+          start,
+          end,
+          maxRoutes: 5,
+          maxExtraRatio: 0.1,
+        );
+        final cap = best.distanceMeters * 1.1 + 1e-6;
+        for (final r in routes) {
+          expect(r.distanceMeters, lessThanOrEqualTo(cap), reason: type);
+        }
+      }
+    });
+
+    test('maxExtraMeters tightens the cap', () async {
+      for (final type in _routerTypes) {
+        final router = _router(type, st, 'grid');
+        final best = await router.findRoute(start, end);
+        final routes = await router.findRoutes(
+          start,
+          end,
+          maxRoutes: 5,
+          maxExtraMeters: 50, // far tighter than the default ratio
+        );
+        for (final r in routes) {
+          expect(
+            r.distanceMeters,
+            lessThanOrEqualTo(best.distanceMeters + 50 + 1e-6),
+            reason: type,
+          );
+        }
+      }
+    });
+
+    test('unreachable target yields an empty list', () async {
+      final split = MemoryStorage();
+      await split.saveGraph(
+        'split',
+        GeoGraph(
+          nodes: const [
+            GeoNode(id: 1, lat: 0, lon: 0),
+            GeoNode(id: 2, lat: 0, lon: 0.001),
+            GeoNode(id: 3, lat: 5, lon: 5),
+            GeoNode(id: 4, lat: 5, lon: 5.001),
+          ],
+          edges: const [
+            GeoEdge(
+              sourceId: 1,
+              targetId: 2,
+              distanceMeters: 111,
+              speedKmh: 50,
+            ),
+            GeoEdge(
+              sourceId: 3,
+              targetId: 4,
+              distanceMeters: 111,
+              speedKmh: 50,
+            ),
+          ],
+        ),
+      );
+      for (final type in _routerTypes) {
+        final routes = await _router(type, split, 'split').findRoutes(
+          const GeoCoordinate(lat: 0, lon: 0),
+          const GeoCoordinate(lat: 5, lon: 5),
+          maxRoutes: 3,
+        );
+        expect(routes, isEmpty, reason: type);
+      }
+    });
+  });
+
   group('routing edge cases (all algorithms)', () {
     test('unreachable target returns GeoRoute.none', () async {
       // Two disjoint single edges in their own components.

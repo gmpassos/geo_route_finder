@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import '../graph/graph_builder.dart';
 import '../graph/graph_compressor.dart';
 import '../graph/graph_types.dart';
@@ -7,6 +9,7 @@ import '../spatial/kd_tree.dart';
 import '../spatial/nearest_node_search.dart';
 import '../storage/compiled_graph.dart';
 import '../storage/geo_storage.dart';
+import 'priority_queue.dart';
 
 /// The public routing contract. Implementations differ only in *how* they find
 /// the path; the API is identical so callers can swap an [AStarRouter] for a
@@ -15,6 +18,37 @@ abstract interface class RouteFinder {
   /// Computes the fastest route from [start] to [end]. Returns
   /// [GeoRoute.none] when no connecting path exists.
   Future<GeoRoute> findRoute(GeoCoordinate start, GeoCoordinate end);
+
+  /// Computes the fastest route and, optionally, a number of *alternative*
+  /// routes between [start] and [end].
+  ///
+  /// The returned list is ordered best-first: element `0` is always the optimal
+  /// (fastest) route — identical to what [findRoute] returns — and the
+  /// remaining elements are alternatives ordered by increasing distance. An
+  /// empty list means no connecting path exists.
+  ///
+  /// Parameters:
+  ///
+  /// * [maxRoutes] — the maximum number of routes to return, *including* the
+  ///   optimal one. The default of `1` reproduces [findRoute] exactly (no
+  ///   alternatives are computed).
+  /// * [maxExtraRatio] — an alternative is discarded if its distance exceeds
+  ///   `bestDistance * (1 + maxExtraRatio)`. `0.3` allows alternatives up to
+  ///   30% longer than the optimal route.
+  /// * [maxExtraMeters] — an optional *absolute* cap on the extra distance over
+  ///   the optimal route. When set, an alternative must satisfy both this and
+  ///   [maxExtraRatio]; the tighter of the two wins.
+  /// * [maxSharing] — an alternative is discarded if more than this fraction of
+  ///   its length overlaps routes already chosen, keeping alternatives
+  ///   genuinely distinct. `0.8` allows up to 80% shared length.
+  Future<List<GeoRoute>> findRoutes(
+    GeoCoordinate start,
+    GeoCoordinate end, {
+    int maxRoutes = 1,
+    double maxExtraRatio = 0.3,
+    double? maxExtraMeters,
+    double maxSharing = 0.8,
+  });
 }
 
 /// A raw shortest path expressed in graph terms, before it is turned into a
@@ -135,25 +169,173 @@ abstract class GraphRouteFinder implements RouteFinder {
 
   @override
   Future<GeoRoute> findRoute(GeoCoordinate start, GeoCoordinate end) async {
+    final routes = await findRoutes(start, end);
+    return routes.isEmpty ? GeoRoute.none : routes.first;
+  }
+
+  @override
+  Future<List<GeoRoute>> findRoutes(
+    GeoCoordinate start,
+    GeoCoordinate end, {
+    int maxRoutes = 1,
+    double maxExtraRatio = 0.3,
+    double? maxExtraMeters,
+    double maxSharing = 0.8,
+  }) async {
     await ensureLoaded();
 
     final s = nearest.snap(start, maxSnapMeters: maxSnapMeters);
     final t = nearest.snap(end, maxSnapMeters: maxSnapMeters);
-    if (!s.found || !t.found) return GeoRoute.none;
+    if (!s.found || !t.found) return const [];
 
     if (s.node == t.node) {
       final c = graph.coordinateOf(s.node);
-      return GeoRoute(
-        distanceMeters: 0,
-        duration: Duration.zero,
-        geometry: [c, c],
-      );
+      return [
+        GeoRoute(distanceMeters: 0, duration: Duration.zero, geometry: [c, c]),
+      ];
     }
 
-    final path = search(s.node, t.node);
-    if (!path.found) return GeoRoute.none;
+    final best = search(s.node, t.node);
+    if (!best.found) return const [];
 
-    return buildRoute(path);
+    if (maxRoutes <= 1) return [buildRoute(best)];
+
+    final paths = _findAlternatives(
+      s.node,
+      t.node,
+      best,
+      maxRoutes: maxRoutes,
+      maxExtraRatio: maxExtraRatio,
+      maxExtraMeters: maxExtraMeters,
+      maxSharing: maxSharing,
+    );
+    return paths.map(buildRoute).toList();
+  }
+
+  /// Penalty multiplier applied to the edges of an accepted (or too-similar)
+  /// route before the next alternative search, steering it onto other roads.
+  static const double _penaltyFactor = 1.6;
+
+  /// Iterative penalty search for alternative routes.
+  ///
+  /// Starting from the optimal [best] path, each round penalizes the edges of
+  /// the routes found so far and re-runs a Dijkstra over the penalized weights.
+  /// Candidates that exceed the distance cap end the search; candidates that
+  /// overlap the chosen routes too much are skipped (after penalizing them
+  /// harder); the rest are accepted until [maxRoutes] is reached.
+  List<RawPath> _findAlternatives(
+    int source,
+    int target,
+    RawPath best, {
+    required int maxRoutes,
+    required double maxExtraRatio,
+    required double? maxExtraMeters,
+    required double maxSharing,
+  }) {
+    final g = graph;
+    final accepted = <RawPath>[best];
+    final usedEdges = <int>{...best.edges};
+
+    final penalty = Float64List(g.edgeCount)..fillRange(0, g.edgeCount, 1.0);
+    _penalize(penalty, best.edges);
+
+    var maxDist = best.distanceMeters * (1 + maxExtraRatio);
+    if (maxExtraMeters != null) {
+      final absCap = best.distanceMeters + maxExtraMeters;
+      if (absCap < maxDist) maxDist = absCap;
+    }
+
+    final maxAttempts = maxRoutes * 8 + 8;
+    var attempts = 0;
+    while (accepted.length < maxRoutes && attempts < maxAttempts) {
+      attempts++;
+      final cand = _penalizedSearch(source, target, penalty);
+      if (!cand.found) break;
+      if (cand.distanceMeters > maxDist) break;
+
+      var shared = 0.0;
+      for (final e in cand.edges) {
+        if (usedEdges.contains(e)) shared += g.adjDist[e];
+      }
+      final sharing = cand.distanceMeters > 0
+          ? shared / cand.distanceMeters
+          : 1;
+      _penalize(penalty, cand.edges);
+      if (sharing > maxSharing) continue; // too similar: penalize, try again
+
+      accepted.add(cand);
+      usedEdges.addAll(cand.edges);
+    }
+
+    // Optimal route stays first; alternatives ordered by increasing distance.
+    final alternatives = accepted.sublist(1)
+      ..sort((a, b) => a.distanceMeters.compareTo(b.distanceMeters));
+    return [accepted.first, ...alternatives];
+  }
+
+  void _penalize(Float64List penalty, List<int> edges) {
+    for (final e in edges) {
+      penalty[e] *= _penaltyFactor;
+    }
+  }
+
+  /// Dijkstra over `adjTime[e] * penalty[e]`, used to discover alternative
+  /// routes. The returned [RawPath] reports the *real* (unpenalized) distance
+  /// and time of the discovered path. Runs on the original routing graph, so it
+  /// works uniformly for every router (it is the alternatives fallback for the
+  /// Contraction-Hierarchies router, whose shortcuts cannot be re-penalized).
+  RawPath _penalizedSearch(int source, int target, Float64List penalty) {
+    final g = graph;
+    final n = g.nodeCount;
+    final dist = Float64List(n)..fillRange(0, n, double.infinity);
+    final parentEdge = Int32List(n)..fillRange(0, n, -1);
+    final parentNode = Int32List(n)..fillRange(0, n, -1);
+
+    final heap = MinHeap();
+    dist[source] = 0;
+    heap.push(0, source);
+
+    while (heap.isNotEmpty) {
+      final d = heap.peekKey;
+      final u = heap.pop();
+      if (d > dist[u]) continue; // stale entry
+      if (u == target) break; // early exit
+      for (var e = g.adjOffset[u]; e < g.adjOffset[u + 1]; e++) {
+        final w = g.adjTime[e];
+        if (w == double.infinity) continue;
+        final v = g.adjTarget[e];
+        final nd = d + w * penalty[e];
+        if (nd < dist[v]) {
+          dist[v] = nd;
+          parentEdge[v] = e;
+          parentNode[v] = u;
+          heap.push(nd, v);
+        }
+      }
+    }
+
+    if (dist[target] == double.infinity) return RawPath.none;
+
+    final revEdges = <int>[];
+    final revVerts = <int>[target];
+    var cur = target;
+    var distance = 0.0;
+    var time = 0.0;
+    while (cur != source) {
+      final e = parentEdge[cur];
+      if (e < 0) return RawPath.none;
+      revEdges.add(e);
+      distance += g.adjDist[e];
+      time += g.adjTime[e];
+      cur = parentNode[cur];
+      revVerts.add(cur);
+    }
+    return RawPath(
+      vertices: revVerts.reversed.toList(),
+      edges: revEdges.reversed.toList(),
+      distanceMeters: distance,
+      timeSeconds: time,
+    );
   }
 
   /// Turns a [RawPath] into a [GeoRoute] by stitching together vertex
