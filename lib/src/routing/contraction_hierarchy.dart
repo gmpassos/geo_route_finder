@@ -318,6 +318,7 @@ class ContractionHierarchyRouter extends GraphRouteFinder {
 
     var mu = double.infinity;
     var meet = -1;
+    var expanded = 0;
 
     while (heapF.isNotEmpty || heapB.isNotEmpty) {
       final fMin = heapF.isEmpty ? double.infinity : heapF.peekKey;
@@ -328,6 +329,7 @@ class ContractionHierarchyRouter extends GraphRouteFinder {
         final d = heapF.peekKey;
         final u = heapF.pop();
         if (d > distF[u]) continue;
+        expanded++;
         for (var i = _fOff[u]; i < _fOff[u + 1]; i++) {
           final eid = _fEid[i];
           final e = _edges[eid];
@@ -348,6 +350,7 @@ class ContractionHierarchyRouter extends GraphRouteFinder {
         final d = heapB.peekKey;
         final u = heapB.pop();
         if (d > distB[u]) continue;
+        expanded++;
         for (var i = _bOff[u]; i < _bOff[u + 1]; i++) {
           final eid = _bEid[i];
           final e = _edges[eid];
@@ -367,6 +370,7 @@ class ContractionHierarchyRouter extends GraphRouteFinder {
       }
     }
 
+    reportExpandedNodes(expanded);
     if (meet < 0) return RawPath.none;
 
     // Forward CH edges source -> meet.

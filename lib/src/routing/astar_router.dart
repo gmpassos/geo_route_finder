@@ -57,10 +57,12 @@ class AStarRouter extends GraphRouteFinder {
     dist[source] = 0;
     heap.push(_heuristic(source, targetCoord), source);
 
+    var expanded = 0;
     while (heap.isNotEmpty) {
       final u = heap.pop();
       if (closed[u] == 1) continue;
       closed[u] = 1;
+      expanded++;
       if (u == target) break; // early exit: optimal once goal is closed
       final du = dist[u];
       for (var e = g.adjOffset[u]; e < g.adjOffset[u + 1]; e++) {
@@ -78,6 +80,7 @@ class AStarRouter extends GraphRouteFinder {
       }
     }
 
+    reportExpandedNodes(expanded);
     if (dist[target] == double.infinity) return RawPath.none;
     return reconstructForward(
       source,

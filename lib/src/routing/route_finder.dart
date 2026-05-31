@@ -76,6 +76,17 @@ abstract class GraphRouteFinder implements RouteFinder {
   NearestNodeSearch? _search;
   bool _prepared = false;
 
+  int _lastExpandedNodes = 0;
+
+  /// The number of graph vertices expanded (settled) by the most recent
+  /// [search]. For the bidirectional Contraction Hierarchies query this counts
+  /// both search directions. Useful for measuring how much of the graph a query
+  /// had to explore. Zero before any search.
+  int get lastExpandedNodes => _lastExpandedNodes;
+
+  /// Subclasses report, at the end of [search], how many vertices they expanded.
+  void reportExpandedNodes(int count) => _lastExpandedNodes = count;
+
   /// The loaded routing graph. Valid only after [ensureLoaded].
   RoutingGraph get graph => _graph!;
 

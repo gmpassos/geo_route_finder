@@ -172,6 +172,13 @@ void main() {
         routeStopwatch.stop();
         stdout.writeln('  Routed in ${_fmtDuration(routeStopwatch.elapsed)}');
 
+        stdout.writeln('---------------------------------------------------');
+        stdout.writeln('Route (${route.geometry.length}):');
+        for (var e in route.geometry) {
+          stdout.writeln('-- $e');
+        }
+        stdout.writeln('---------------------------------------------------');
+
         // 6. Verify the result.
         expect(route.found, isTrue, reason: 'a valid route should be found');
         expect(
@@ -207,6 +214,7 @@ void main() {
         );
         stdout.writeln('  Estimated travel time: ${route.duration}');
         stdout.writeln('  Route points: ${route.geometry.length}');
+        stdout.writeln('  Nodes analyzed: ${router.lastExpandedNodes}');
 
         stdout.writeln('\n=== Timing summary ===');
         stdout.writeln(

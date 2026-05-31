@@ -146,6 +146,19 @@ void main() {
         expect(route.geometry.length, greaterThan(2), reason: type);
       }
     });
+
+    test('reports how many nodes each search expanded', () async {
+      for (final type in _routerTypes) {
+        final router = _router(type, compiled, 'grid');
+        // No search yet -> nothing expanded.
+        expect(router.lastExpandedNodes, 0, reason: type);
+
+        final route = await router.findRoute(start, end);
+        expect(route.found, isTrue, reason: type);
+        // A real search must expand at least the path's vertices.
+        expect(router.lastExpandedNodes, greaterThan(0), reason: type);
+      }
+    });
   });
 
   group('routing edge cases (all algorithms)', () {

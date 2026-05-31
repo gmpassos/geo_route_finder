@@ -28,10 +28,12 @@ class DijkstraRouter extends GraphRouteFinder {
     dist[source] = 0;
     heap.push(0, source);
 
+    var expanded = 0;
     while (heap.isNotEmpty) {
       final d = heap.peekKey;
       final u = heap.pop();
       if (d > dist[u]) continue; // stale entry
+      expanded++;
       if (u == target) break; // early exit
       for (var e = g.adjOffset[u]; e < g.adjOffset[u + 1]; e++) {
         final w = g.adjTime[e];
@@ -47,6 +49,7 @@ class DijkstraRouter extends GraphRouteFinder {
       }
     }
 
+    reportExpandedNodes(expanded);
     if (dist[target] == double.infinity) return RawPath.none;
     return reconstructForward(
       source,
