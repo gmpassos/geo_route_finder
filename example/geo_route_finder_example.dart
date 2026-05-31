@@ -146,18 +146,20 @@ Future<void> runOsmExample(List<String> args) async {
   //    infer speeds, build the topology and spatial index, then store it
   //    compressed under `graphId`. Each vehicle profile routes over a different
   //    network (a bicycle uses cycleways but not motorways, ignores car one-way
-  //    rules, …), so we build and store one graph per profile.
-  final base = region.split('/').last; // e.g. "sao-paulo"
+  //    rules, …), so we build one graph per profile. Storage keys graphs by
+  //    `(id, profile)`, so the same `graphId` holds an independent graph per
+  //    mode — no need to encode the mode into the id.
+  final graphId = region.split('/').last; // e.g. "sao-paulo"
   for (final profile in [VehicleProfile.car, VehicleProfile.bicycle]) {
-    final graphId = '${base}_${profile.name}';
     print('Converting to graph "$graphId" (${profile.name}) …');
     await OsmConverter(
       profile: profile,
     ).convert(inputFile: pbf, storage: storage, graphId: graphId);
   }
 
-  // 3. Route across each stored graph, exactly as in the grid demo above.
-  final carRouter = AStarRouter(storage: storage, graphId: '${base}_car');
+  // 3. Route across each stored graph, exactly as in the grid demo above. The
+  //    router selects the stored graph via its `profile`.
+  final carRouter = AStarRouter(storage: storage, graphId: graphId);
   printRoute(
     'car',
     await carRouter.findRoute(start, end),
@@ -173,7 +175,11 @@ Future<void> runOsmExample(List<String> args) async {
     carRouter.lastExpandedNodes,
   );
 
-  final bikeRouter = AStarRouter(storage: storage, graphId: '${base}_bicycle');
+  final bikeRouter = AStarRouter(
+    storage: storage,
+    graphId: graphId,
+    profile: VehicleProfile.bicycle,
+  );
   printRoute(
     'bicycle',
     await bikeRouter.findRoute(start, end),

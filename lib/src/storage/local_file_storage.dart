@@ -7,6 +7,7 @@ import '../graph/graph_builder.dart';
 import '../model/geo_edge.dart';
 import '../model/geo_graph.dart';
 import '../model/geo_node.dart';
+import '../osm/vehicle_profile.dart';
 import '../serialization/checksum.dart';
 import '../serialization/graph_deserializer.dart';
 import '../serialization/graph_serializer.dart';
@@ -26,9 +27,11 @@ import 'compiled_graph.dart';
 /// over the file bytes (the closest pure-Dart equivalent to memory mapping,
 /// which the SDK does not expose). Checksums are verified on every load.
 ///
-/// Because each graph id is an independent triple of files, datasets can be
-/// updated incrementally — re-converting one region replaces only that region's
-/// files and leaves every other stored graph untouched.
+/// The on-disk key combines the [id] with the [VehicleProfile] name, so the same
+/// logical dataset holds an independent triple of files per mode
+/// (`<id>_<profile>.graph`, …). Because each `(id, profile)` is its own triple,
+/// datasets can be updated incrementally — re-converting one region+profile
+/// replaces only those files and leaves every other stored graph untouched.
 class LocalFileStorage implements CompiledGraphStorage {
   /// Directory under which graph files are written. Created on first save.
   final String directory;
@@ -43,14 +46,22 @@ class LocalFileStorage implements CompiledGraphStorage {
   }) : _serializer = serializer,
        _deserializer = deserializer;
 
-  String _safe(String id) => id.replaceAll(RegExp(r'[\\/]'), '_');
-  String _graphPath(String id) => p.join(directory, '${_safe(id)}.graph');
-  String _indexPath(String id) => p.join(directory, '${_safe(id)}.index');
-  String _metaPath(String id) => p.join(directory, '${_safe(id)}.meta');
+  /// Resolves the filesystem-safe storage key from [id] and [profile].
+  String _key(String id, VehicleProfile profile) =>
+      '${id}_${profile.name}'.replaceAll(RegExp(r'[\\/]'), '_');
+
+  String _graphPath(String key) => p.join(directory, '$key.graph');
+  String _indexPath(String key) => p.join(directory, '$key.index');
+  String _metaPath(String key) => p.join(directory, '$key.meta');
 
   @override
-  Future<void> saveCompiled(String id, CompiledGraph compiled) async {
+  Future<void> saveCompiled(
+    String id,
+    CompiledGraph compiled, {
+    VehicleProfile profile = VehicleProfile.car,
+  }) async {
     await Directory(directory).create(recursive: true);
+    final key = _key(id, profile);
 
     final graphBytes = _serializer.serializeGraph(compiled.graph);
     final indexBytes = _serializer.serializeIndex(compiled.tree);
@@ -59,6 +70,7 @@ class LocalFileStorage implements CompiledGraphStorage {
 
     final meta = GraphMeta(
       formatVersion: kGraphFormatVersion,
+      profileName: profile.name,
       nodeCount: compiled.graph.nodeCount,
       edgeCount: compiled.graph.edgeCount,
       graphChecksum: graphCrc,
@@ -66,16 +78,20 @@ class LocalFileStorage implements CompiledGraphStorage {
       createdAt: DateTime.now(),
     );
 
-    await File(_graphPath(id)).writeAsBytes(graphBytes, flush: true);
-    await File(_indexPath(id)).writeAsBytes(indexBytes, flush: true);
+    await File(_graphPath(key)).writeAsBytes(graphBytes, flush: true);
+    await File(_indexPath(key)).writeAsBytes(indexBytes, flush: true);
     await File(
-      _metaPath(id),
+      _metaPath(key),
     ).writeAsString(jsonEncode(meta.toJson()), flush: true);
   }
 
   @override
-  Future<CompiledGraph?> loadCompiled(String id) async {
-    final metaFile = File(_metaPath(id));
+  Future<CompiledGraph?> loadCompiled(
+    String id, {
+    VehicleProfile profile = VehicleProfile.car,
+  }) async {
+    final key = _key(id, profile);
+    final metaFile = File(_metaPath(key));
     if (!await metaFile.exists()) return null;
 
     final meta = GraphMeta.fromJson(
@@ -88,13 +104,13 @@ class LocalFileStorage implements CompiledGraphStorage {
       );
     }
 
-    final graphBytes = await File(_graphPath(id)).readAsBytes();
+    final graphBytes = await File(_graphPath(key)).readAsBytes();
     if (Crc32.compute(graphBytes) != meta.graphChecksum) {
       throw GraphFormatException(
         'checksum mismatch for "$id" (.graph corrupt)',
       );
     }
-    final indexBytes = await File(_indexPath(id)).readAsBytes();
+    final indexBytes = await File(_indexPath(key)).readAsBytes();
     if (Crc32.compute(indexBytes) != meta.indexChecksum) {
       throw GraphFormatException(
         'checksum mismatch for "$id" (.index corrupt)',
@@ -107,11 +123,16 @@ class LocalFileStorage implements CompiledGraphStorage {
   }
 
   @override
-  Future<void> saveGraph(String id, GeoGraph graph) async {
+  Future<void> saveGraph(
+    String id,
+    GeoGraph graph, {
+    VehicleProfile profile = VehicleProfile.car,
+  }) async {
     final routing = const GraphBuilder().build(graph);
     final tree = KdTree.build(routing);
     final meta = GraphMeta(
       formatVersion: kGraphFormatVersion,
+      profileName: profile.name,
       nodeCount: routing.nodeCount,
       edgeCount: routing.edgeCount,
       graphChecksum: 0,
@@ -121,12 +142,16 @@ class LocalFileStorage implements CompiledGraphStorage {
     await saveCompiled(
       id,
       CompiledGraph(graph: routing, tree: tree, meta: meta),
+      profile: profile,
     );
   }
 
   @override
-  Future<GeoGraph?> loadGraph(String id) async {
-    final compiled = await loadCompiled(id);
+  Future<GeoGraph?> loadGraph(
+    String id, {
+    VehicleProfile profile = VehicleProfile.car,
+  }) async {
+    final compiled = await loadCompiled(id, profile: profile);
     if (compiled == null) return null;
     final g = compiled.graph;
     final nodes = <GeoNode>[
@@ -147,6 +172,7 @@ class LocalFileStorage implements CompiledGraphStorage {
             distanceMeters: dist,
             speedKmh: speed,
             oneWay: true,
+            tolls: g.adjToll[e],
           ),
         );
       }
@@ -155,11 +181,18 @@ class LocalFileStorage implements CompiledGraphStorage {
   }
 
   @override
-  Future<bool> exists(String id) => File(_metaPath(id)).exists();
+  Future<bool> exists(
+    String id, {
+    VehicleProfile profile = VehicleProfile.car,
+  }) => File(_metaPath(_key(id, profile))).exists();
 
   @override
-  Future<void> delete(String id) async {
-    for (final path in [_graphPath(id), _indexPath(id), _metaPath(id)]) {
+  Future<void> delete(
+    String id, {
+    VehicleProfile profile = VehicleProfile.car,
+  }) async {
+    final key = _key(id, profile);
+    for (final path in [_graphPath(key), _indexPath(key), _metaPath(key)]) {
       final f = File(path);
       if (await f.exists()) await f.delete();
     }

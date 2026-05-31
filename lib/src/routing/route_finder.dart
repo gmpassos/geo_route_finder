@@ -5,6 +5,7 @@ import '../graph/graph_compressor.dart';
 import '../graph/graph_types.dart';
 import '../model/geo_coordinate.dart';
 import '../model/geo_route.dart';
+import '../osm/vehicle_profile.dart';
 import '../spatial/kd_tree.dart';
 import '../spatial/nearest_node_search.dart';
 import '../storage/compiled_graph.dart';
@@ -107,6 +108,11 @@ abstract class GraphRouteFinder implements RouteFinder {
   final GeoStorage storage;
   final String graphId;
 
+  /// Transport mode to route for. Selects which graph stored under [graphId] is
+  /// loaded (storage keys graphs by `(id, profile)`). Defaults to
+  /// [VehicleProfile.car].
+  final VehicleProfile profile;
+
   /// Maximum snapping distance; coordinates farther than this from any vertex
   /// fail to route. `null` disables the limit.
   final double? maxSnapMeters;
@@ -114,6 +120,7 @@ abstract class GraphRouteFinder implements RouteFinder {
   GraphRouteFinder({
     required this.storage,
     required this.graphId,
+    this.profile = VehicleProfile.car,
     this.maxSnapMeters,
   });
 
@@ -144,17 +151,22 @@ abstract class GraphRouteFinder implements RouteFinder {
     if (_prepared) return;
 
     final st = storage;
-    if (st is CompiledGraphStorage && await st.exists(graphId)) {
-      final compiled = await st.loadCompiled(graphId);
+    if (st is CompiledGraphStorage &&
+        await st.exists(graphId, profile: profile)) {
+      final compiled = await st.loadCompiled(graphId, profile: profile);
       if (compiled == null) {
-        throw StateError('No graph stored under id "$graphId".');
+        throw StateError(
+          'No graph stored under id "$graphId" for profile "${profile.name}".',
+        );
       }
       _graph = compiled.graph;
       _search = NearestNodeSearch(compiled.graph, compiled.tree);
     } else {
-      final geo = await st.loadGraph(graphId);
+      final geo = await st.loadGraph(graphId, profile: profile);
       if (geo == null) {
-        throw StateError('No graph stored under id "$graphId".');
+        throw StateError(
+          'No graph stored under id "$graphId" for profile "${profile.name}".',
+        );
       }
       // Compress degree-2 chains before indexing and routing, mirroring the
       // compiled path (OsmConverter.compile). Without this the KD-tree and the

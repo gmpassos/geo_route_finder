@@ -47,17 +47,32 @@ GeoGraph buildGrid({
 class MemoryStorage implements GeoStorage {
   final Map<String, GeoGraph> _store = {};
 
-  @override
-  Future<void> saveGraph(String id, GeoGraph graph) async => _store[id] = graph;
+  String _key(String id, VehicleProfile profile) => '${id}_${profile.name}';
 
   @override
-  Future<GeoGraph?> loadGraph(String id) async => _store[id];
+  Future<void> saveGraph(
+    String id,
+    GeoGraph graph, {
+    VehicleProfile profile = VehicleProfile.car,
+  }) async => _store[_key(id, profile)] = graph;
 
   @override
-  Future<bool> exists(String id) async => _store.containsKey(id);
+  Future<GeoGraph?> loadGraph(
+    String id, {
+    VehicleProfile profile = VehicleProfile.car,
+  }) async => _store[_key(id, profile)];
 
   @override
-  Future<void> delete(String id) async => _store.remove(id);
+  Future<bool> exists(
+    String id, {
+    VehicleProfile profile = VehicleProfile.car,
+  }) async => _store.containsKey(_key(id, profile));
+
+  @override
+  Future<void> delete(
+    String id, {
+    VehicleProfile profile = VehicleProfile.car,
+  }) async => _store.remove(_key(id, profile));
 }
 
 /// Encodes a minimal `.osm.pbf` with three dense nodes and a single way carrying

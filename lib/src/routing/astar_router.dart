@@ -19,6 +19,7 @@ class AStarRouter extends GraphRouteFinder {
   AStarRouter({
     required super.storage,
     required super.graphId,
+    super.profile,
     super.maxSnapMeters,
   });
 

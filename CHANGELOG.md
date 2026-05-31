@@ -1,3 +1,38 @@
+## 1.0.3
+
+- Routing:
+  - `GraphRouteFinder`:
+    - Added `profile` field to select transport mode for routing.
+    - Updated graph loading and existence checks to use `(graphId, profile)` keys.
+  - `AStarRouter`, `DijkstraRouter`, `ContractionHierarchyRouter`:
+    - Added optional `profile` parameter to constructors.
+- OSM Conversion:
+  - `OsmConverter`:
+    - Updated `convert` method to store graphs scoped by `profile`.
+- Storage:
+  - `GeoStorage` interface:
+    - Added `profile` parameter to all methods to key graphs by `(id, profile)`.
+  - `CompiledGraphStorage` interface:
+    - Added `profile` parameter to `saveCompiled` and `loadCompiled`.
+  - `LocalFileStorage`:
+    - Updated file naming to include `profile` (e.g. `<id>_<profile>.graph`).
+    - Updated all storage methods to accept and use `profile`.
+    - Added checksum verification and metadata recording per profile.
+- Example:
+  - `geo_route_finder_example.dart`:
+    - Simplified graph id usage to exclude profile suffix.
+    - Updated router instantiation to pass `profile` explicitly.
+- Model:
+  - `GraphMeta`:
+    - Added `profileName` field to record transport mode.
+- Tests:
+  - `serialization_test.dart`:
+    - Updated tests to verify profile-specific storage keys and independent graphs per profile.
+  - `support.dart`:
+    - Updated `MemoryStorage` to key graphs by `(id, profile)`.
+- Misc:
+  - Added `profile` parameter propagation throughout routing and storage layers to support multiple transport modes stored under the same graph id.
+
 ## 1.0.2
 
 - Multi-profile routing (car, motorcycle, bicycle) and toll avoidance.

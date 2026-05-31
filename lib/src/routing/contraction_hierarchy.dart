@@ -73,6 +73,7 @@ class ContractionHierarchyRouter extends GraphRouteFinder {
   ContractionHierarchyRouter({
     required super.storage,
     required super.graphId,
+    super.profile,
     super.maxSnapMeters,
     this.witnessSettleLimit = 1000,
   });

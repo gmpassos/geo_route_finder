@@ -1,4 +1,5 @@
 import '../graph/graph_types.dart';
+import '../osm/vehicle_profile.dart';
 import '../spatial/kd_tree.dart';
 import 'geo_storage.dart';
 
@@ -6,6 +7,10 @@ import 'geo_storage.dart';
 class GraphMeta {
   /// On-disk format version, bumped on any breaking layout change.
   final int formatVersion;
+
+  /// Name of the [VehicleProfile] the graph was built for (e.g. `car`).
+  final String profileName;
+
   final int nodeCount;
   final int edgeCount;
 
@@ -20,6 +25,7 @@ class GraphMeta {
 
   const GraphMeta({
     required this.formatVersion,
+    this.profileName = 'car',
     required this.nodeCount,
     required this.edgeCount,
     required this.graphChecksum,
@@ -29,6 +35,7 @@ class GraphMeta {
 
   Map<String, dynamic> toJson() => {
     'formatVersion': formatVersion,
+    'profileName': profileName,
     'nodeCount': nodeCount,
     'edgeCount': edgeCount,
     'graphChecksum': graphChecksum,
@@ -38,6 +45,7 @@ class GraphMeta {
 
   factory GraphMeta.fromJson(Map<String, dynamic> j) => GraphMeta(
     formatVersion: j['formatVersion'] as int,
+    profileName: j['profileName'] as String? ?? 'car',
     nodeCount: j['nodeCount'] as int,
     edgeCount: j['edgeCount'] as int,
     graphChecksum: j['graphChecksum'] as int,
@@ -71,9 +79,16 @@ class CompiledGraph {
 /// plain [GeoStorage] API. This keeps the simple contract intact while letting
 /// the bundled [LocalFileStorage] hit the package's performance targets.
 abstract interface class CompiledGraphStorage implements GeoStorage {
-  /// Persists a compiled artifact under [id].
-  Future<void> saveCompiled(String id, CompiledGraph compiled);
+  /// Persists a compiled artifact under [id] for [profile].
+  Future<void> saveCompiled(
+    String id,
+    CompiledGraph compiled, {
+    required VehicleProfile profile,
+  });
 
-  /// Loads the compiled artifact under [id], or `null` if absent.
-  Future<CompiledGraph?> loadCompiled(String id);
+  /// Loads the compiled artifact under [id] for [profile], or `null` if absent.
+  Future<CompiledGraph?> loadCompiled(
+    String id, {
+    required VehicleProfile profile,
+  });
 }

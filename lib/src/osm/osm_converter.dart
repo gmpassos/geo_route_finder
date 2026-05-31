@@ -146,7 +146,9 @@ class OsmConverter {
     return CompiledGraph(graph: routing, tree: tree, meta: meta);
   }
 
-  /// Converts [inputFile] and stores the result under [graphId] in [storage].
+  /// Converts [inputFile] and stores the result under [graphId] in [storage],
+  /// scoped to this converter's [profile] (so the same [graphId] can hold an
+  /// independent graph per transport mode).
   ///
   /// When [storage] supports the compiled fast path, the compressed CSR + KD-tree
   /// are written directly; otherwise the generic [GeoGraph] is stored via
@@ -158,9 +160,13 @@ class OsmConverter {
   }) async {
     if (storage is CompiledGraphStorage) {
       final compiled = await compile(inputFile);
-      await storage.saveCompiled(graphId, compiled);
+      await storage.saveCompiled(graphId, compiled, profile: profile);
     } else {
-      await storage.saveGraph(graphId, await toGeoGraph(inputFile));
+      await storage.saveGraph(
+        graphId,
+        await toGeoGraph(inputFile),
+        profile: profile,
+      );
     }
   }
 

@@ -3,7 +3,7 @@ description: >-
   High-performance, data-source-agnostic, offline-first routing engine in pure
   Dart. Pluggable map data sources (OpenStreetMap included) and storage
   backends, with A*, Dijkstra and Contraction Hierarchies routers.
-version: 1.0.2
+version: 1.0.3
 repository: https://github.com/gmpassos/geo_route_finder
 
 environment:

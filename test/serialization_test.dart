@@ -103,22 +103,22 @@ void main() {
       final compiled = await storage.loadCompiled('city');
       expect(compiled, isNotNull);
       expect(compiled!.graph.nodeCount, 36);
-      // Files exist on disk.
-      expect(File('${dir.path}/city.graph').existsSync(), isTrue);
-      expect(File('${dir.path}/city.index').existsSync(), isTrue);
-      expect(File('${dir.path}/city.meta').existsSync(), isTrue);
+      // Files exist on disk, keyed by id + profile name.
+      expect(File('${dir.path}/city_car.graph').existsSync(), isTrue);
+      expect(File('${dir.path}/city_car.index').existsSync(), isTrue);
+      expect(File('${dir.path}/city_car.meta').existsSync(), isTrue);
     });
 
     test('delete removes all artifacts', () async {
       await storage.saveGraph('tmp', buildGrid(n: 4));
       await storage.delete('tmp');
       expect(await storage.exists('tmp'), isFalse);
-      expect(File('${dir.path}/tmp.graph').existsSync(), isFalse);
+      expect(File('${dir.path}/tmp_car.graph').existsSync(), isFalse);
     });
 
     test('detects a corrupted .graph via checksum', () async {
       await storage.saveGraph('city', buildGrid(n: 4));
-      final f = File('${dir.path}/city.graph');
+      final f = File('${dir.path}/city_car.graph');
       final bytes = await f.readAsBytes();
       bytes[bytes.length - 1] ^= 0xFF; // flip a data byte
       await f.writeAsBytes(bytes, flush: true);
@@ -131,6 +131,39 @@ void main() {
     test('missing graph loads as null', () async {
       expect(await storage.loadCompiled('nope'), isNull);
       expect(await storage.loadGraph('nope'), isNull);
+    });
+
+    test('the same id holds an independent graph per profile', () async {
+      // Two different-sized graphs stored under one id, keyed by profile.
+      await storage.saveGraph('city', buildGrid(n: 4)); // car (default)
+      await storage.saveGraph(
+        'city',
+        buildGrid(n: 6),
+        profile: VehicleProfile.bicycle,
+      );
+
+      // Each profile resolves to its own files...
+      expect(File('${dir.path}/city_car.graph').existsSync(), isTrue);
+      expect(File('${dir.path}/city_bicycle.graph').existsSync(), isTrue);
+
+      // ...and loads back independently, with the profile recorded in meta.
+      final car = await storage.loadCompiled('city');
+      final bike = await storage.loadCompiled(
+        'city',
+        profile: VehicleProfile.bicycle,
+      );
+      expect(car!.graph.nodeCount, 16);
+      expect(car.meta.profileName, 'car');
+      expect(bike!.graph.nodeCount, 36);
+      expect(bike.meta.profileName, 'bicycle');
+
+      // Deleting one profile leaves the other intact.
+      await storage.delete('city', profile: VehicleProfile.bicycle);
+      expect(await storage.exists('city'), isTrue); // car remains
+      expect(
+        await storage.exists('city', profile: VehicleProfile.bicycle),
+        isFalse,
+      );
     });
   });
 }

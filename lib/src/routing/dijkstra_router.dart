@@ -13,6 +13,7 @@ class DijkstraRouter extends GraphRouteFinder {
   DijkstraRouter({
     required super.storage,
     required super.graphId,
+    super.profile,
     super.maxSnapMeters,
   });
 
