@@ -4,7 +4,7 @@ description: >-
   Dart. Pluggable map data sources (OpenStreetMap included) and storage
   backends, with A*, Dijkstra and Contraction Hierarchies routers.
 version: 0.1.0
-# repository: https://github.com/my_org/geo_route_finder
+repository: https://github.com/gmpassos/geo_route_finder
 
 environment:
   sdk: ^3.10.9
