@@ -45,7 +45,13 @@ jobs:
       - name: Upgrade dependencies
         run: dart pub upgrade
       - name: Run tests (VM)
-        run: dart test --platform vm --coverage=./coverage
+        # `-x slow` excludes the real-network end-to-end test, which downloads
+        # a ~400 MB Geofabrik extract. A build must not depend on a third
+        # party's availability or rate limits — when that download fails, CI
+        # goes red for a reason that has nothing to do with the commit. The
+        # tag exists for exactly this; run it deliberately with
+        # `dart test -t slow`.
+        run: dart test --platform vm -x slow --coverage=./coverage
       - name: Generate coverage report
         run: |
           dart pub global activate coverage
