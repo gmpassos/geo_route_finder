@@ -17,10 +17,3 @@ dev_dependencies:
   lints: ^6.1.0
   test: ^1.31.1
   dependency_validator: ^5.0.5
-
-# Local development against the sibling package. REMOVE before publishing —
-# `geo_osm_pbf` must be released to pub.dev first, and this package then
-# resolves it by the hosted constraint above.
-dependency_overrides:
-  geo_osm_pbf:
-    path: ../geo_osm_pbf

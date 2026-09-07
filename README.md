@@ -3,6 +3,7 @@
 [![pub package](https://img.shields.io/pub/v/geo_route_finder.svg?logo=dart&logoColor=00b9fc)](https://pub.dev/packages/geo_route_finder)
 [![Null Safety](https://img.shields.io/badge/null-safety-brightgreen)](https://dart.dev/null-safety)
 [![Dart CI](https://github.com/gmpassos/geo_route_finder/actions/workflows/dart.yml/badge.svg?branch=master)](https://github.com/gmpassos/geo_route_finder/actions/workflows/dart.yml)
+[![codecov](https://codecov.io/gh/gmpassos/geo_route_finder/graph/badge.svg)](https://codecov.io/gh/gmpassos/geo_route_finder)
 [![GitHub Tag](https://img.shields.io/github/v/tag/gmpassos/geo_route_finder?logo=git&logoColor=white)](https://github.com/gmpassos/geo_route_finder/releases)
 [![New Commits](https://img.shields.io/github/commits-since/gmpassos/geo_route_finder/latest?logo=git&logoColor=white)](https://github.com/gmpassos/geo_route_finder/network)
 [![Last Commits](https://img.shields.io/github/last-commit/gmpassos/geo_route_finder?logo=git&logoColor=white)](https://github.com/gmpassos/geo_route_finder/commits/master)
