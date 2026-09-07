@@ -1,12 +1,12 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:geo_osm_pbf/geo_osm_pbf.dart';
 import 'package:path/path.dart' as p;
 
 import '../graph/graph_builder.dart';
 import '../model/geo_edge.dart';
 import '../model/geo_graph.dart';
-import '../model/geo_node.dart';
 import '../osm/vehicle_profile.dart';
 import '../serialization/checksum.dart';
 import '../serialization/graph_deserializer.dart';

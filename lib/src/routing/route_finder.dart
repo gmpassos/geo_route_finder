@@ -1,9 +1,10 @@
 import 'dart:typed_data';
 
+import 'package:geo_osm_pbf/geo_osm_pbf.dart';
+
 import '../graph/graph_builder.dart';
 import '../graph/graph_compressor.dart';
 import '../graph/graph_types.dart';
-import '../model/geo_coordinate.dart';
 import '../model/geo_route.dart';
 import '../osm/vehicle_profile.dart';
 import '../spatial/kd_tree.dart';

@@ -1,5 +1,6 @@
+import 'package:geo_osm_pbf/geo_osm_pbf.dart';
+
 import '../graph/graph_types.dart';
-import '../model/geo_coordinate.dart';
 import 'kd_tree.dart';
 
 /// High-level snapping service that maps free-form geographic coordinates onto

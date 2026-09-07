@@ -1,5 +1,6 @@
+import 'package:geo_osm_pbf/geo_osm_pbf.dart';
+
 import 'geo_edge.dart';
-import 'geo_node.dart';
 
 /// The normalized, data-source-agnostic graph that every adapter converts into
 /// and that the routing engine operates on exclusively.

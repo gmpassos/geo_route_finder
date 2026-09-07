@@ -1,6 +1,6 @@
 import 'dart:typed_data';
 
-import '../model/geo_coordinate.dart';
+import 'package:geo_osm_pbf/geo_osm_pbf.dart';
 
 /// The compiled, search-optimized routing graph.
 ///

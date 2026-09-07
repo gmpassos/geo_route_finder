@@ -1,15 +1,13 @@
+import 'package:geo_osm_pbf/geo_osm_pbf.dart';
+
 import '../graph/graph_builder.dart';
 import '../graph/graph_compressor.dart';
-import '../model/geo_coordinate.dart';
 import '../model/geo_edge.dart';
 import '../model/geo_graph.dart';
-import '../model/geo_node.dart';
-import '../model/geo_way.dart';
 import '../serialization/graph_serializer.dart';
 import '../spatial/kd_tree.dart';
 import '../storage/compiled_graph.dart';
 import '../storage/geo_storage.dart';
-import 'osm_pbf_parser.dart';
 import 'vehicle_profile.dart';
 
 /// Converts an OpenStreetMap `.osm.pbf` extract into a routable graph.

@@ -1,3 +1,30 @@
+## 1.1.0
+
+- **OSM acquisition and decoding moved to the new `geo_osm_pbf` package**, so
+  that the same extract can also feed `geo_tile_builder` without either package
+  depending on the other. **Not a breaking change:** the moved types are
+  re-exported from `package:geo_route_finder/geo_route_finder.dart` and are the
+  same types, not wrappers, so existing imports are unaffected. The full test
+  suite passes unchanged.
+  - Moved: `OsmPbfParser`, `GeoCoordinate` (with `haversineMeters`,
+    `equirectSquared`, `earthRadiusMeters`), `GeoNode`, `GeoWay`,
+    `OsmDownloader`, `OsmDownloadSource`, `OsmMirroredSource`,
+    `OsmSourceResolver`, `OsmDownloadSourceRegistry`, `MirrorBenchmark`,
+    `OsmPatternDownloadSource`, and the Geofabrik, OSM France, BBBike and
+    Planet sources.
+  - Stayed: everything routing-specific — `GeoEdge`, `GeoGraph`, `GeoRoute`,
+    `GeoDataSource`, `OsmConverter`, `OsmDataSource`, `VehicleProfile`,
+    `Crc32`, and all of `graph/`, `spatial/`, `routing/`, `storage/`.
+  - `geo_osm_pbf` additionally decodes node tags, relations, sparse nodes and
+    the `OSMHeader` block, none of which this package reads. Turn restrictions
+    are now available to build on.
+- Dependencies:
+  - Added `geo_osm_pbf: ^1.0.0`.
+- Tests:
+  - `osm_download_source_test.dart` and `osm_downloader_resume_test.dart` moved
+    to `geo_osm_pbf` with the code they cover. Every remaining test is
+    untouched.
+
 ## 1.0.3
 
 - Routing:

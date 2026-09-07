@@ -3,7 +3,7 @@ description: >-
   High-performance, data-source-agnostic, offline-first routing engine in pure
   Dart. Pluggable map data sources (OpenStreetMap included) and storage
   backends, with A*, Dijkstra and Contraction Hierarchies routers.
-version: 1.0.3
+version: 1.1.0
 repository: https://github.com/gmpassos/geo_route_finder
 
 environment:
@@ -11,8 +11,16 @@ environment:
 
 dependencies:
   path: ^1.9.0
+  geo_osm_pbf: ^1.0.0
 
 dev_dependencies:
   lints: ^6.1.0
   test: ^1.31.1
   dependency_validator: ^5.0.5
+
+# Local development against the sibling package. REMOVE before publishing —
+# `geo_osm_pbf` must be released to pub.dev first, and this package then
+# resolves it by the hosted constraint above.
+dependency_overrides:
+  geo_osm_pbf:
+    path: ../geo_osm_pbf

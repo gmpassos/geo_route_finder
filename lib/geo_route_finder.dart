@@ -31,32 +31,25 @@
 /// and any query can avoid them with `findRoute(start, end, avoidTolls: true)`.
 library;
 
-// Model — the normalized, data-source-agnostic types.
-export 'src/model/geo_coordinate.dart';
-export 'src/model/geo_node.dart';
+// OpenStreetMap acquisition and decoding, plus the source-level element model,
+// all live in the sibling package `geo_osm_pbf` — shared with the vector tile
+// builder that reads the same extracts.
+//
+// They are re-exported here so that `OsmPbfParser`, `GeoCoordinate`, `GeoNode`,
+// `GeoWay`, `OsmDownloader` and the download sources remain importable from
+// this library exactly as before. These are the same types, not wrappers.
+export 'package:geo_osm_pbf/geo_osm_pbf.dart';
+
+// Model — the routing-specific types built on top of that model.
 export 'src/model/geo_edge.dart';
-export 'src/model/geo_way.dart';
 export 'src/model/geo_graph.dart';
 export 'src/model/geo_route.dart';
 
 // Data source extension point and the OSM adapter.
 export 'src/datasource/geo_data_source.dart';
-export 'src/osm/osm_downloader.dart';
-export 'src/osm/osm_pbf_parser.dart' show OsmPbfParser;
 export 'src/osm/osm_converter.dart';
 export 'src/osm/osm_data_source.dart';
 export 'src/osm/vehicle_profile.dart';
-
-// Pluggable OSM download sources (region -> downloadable URL) and the registry
-// that selects the best provider/mirror. The downloader is source-agnostic.
-export 'src/osm/download/osm_download_source.dart';
-export 'src/osm/download/osm_download_source_registry.dart';
-export 'src/osm/download/mirror_benchmark.dart';
-export 'src/osm/download/sources/pattern_download_source.dart';
-export 'src/osm/download/sources/geofabrik_source.dart';
-export 'src/osm/download/sources/osm_france_source.dart';
-export 'src/osm/download/sources/bbbike_source.dart';
-export 'src/osm/download/sources/planet_source.dart';
 
 // Graph compilation and optimization.
 export 'src/graph/graph_types.dart';

@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 
-import '../model/geo_coordinate.dart';
+import 'package:geo_osm_pbf/geo_osm_pbf.dart';
+
 import 'graph_types.dart';
 
 /// Statistics describing a single compression pass.

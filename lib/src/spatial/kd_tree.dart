@@ -1,8 +1,9 @@
 import 'dart:math' as math;
 import 'dart:typed_data';
 
+import 'package:geo_osm_pbf/geo_osm_pbf.dart';
+
 import '../graph/graph_types.dart';
-import '../model/geo_coordinate.dart';
 
 /// Result of a nearest-neighbour query: the matched vertex and its great-circle
 /// distance from the query point in meters.

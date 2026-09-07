@@ -1,4 +1,4 @@
-import 'geo_coordinate.dart';
+import 'package:geo_osm_pbf/geo_osm_pbf.dart';
 
 /// The result of a successful routing query.
 ///

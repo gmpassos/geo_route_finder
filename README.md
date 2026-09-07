@@ -17,8 +17,17 @@ backend. OpenStreetMap is the bundled reference adapter — the engine itself is
 not coupled to it.
 
 Runs anywhere Dart runs (server, CLI, desktop, mobile, Flutter — any non-web
-target, since it uses `dart:io` for files and networking). **No runtime
-dependencies.**
+target, since it uses `dart:io` for files and networking).
+
+OpenStreetMap acquisition and decoding live in the sibling package
+[`geo_osm_pbf`][osm_pbf], which is shared with [`geo_tile_builder`][tiler] so
+that one downloaded extract yields both a routing graph and the map tiles it is
+drawn on. Its types — `OsmPbfParser`, `GeoCoordinate`, `GeoNode`, `GeoWay`,
+`OsmDownloader` and the download sources — are **re-exported here**, so they are
+imported from this library exactly as before.
+
+[osm_pbf]: https://pub.dev/packages/geo_osm_pbf
+[tiler]: https://pub.dev/packages/geo_tile_builder
 
 ## API Documentation
 
@@ -45,6 +54,9 @@ See the [API Documentation][api_doc] for a full list of functions, classes and e
 ## Architecture
 
 ```
+geo_osm_pbf  (download, stream-decode .osm.pbf)
+     │
+     ▼
 GeoDataSource  ──►  GeoGraph  ──►  GraphBuilder  ──►  RoutingGraph (CSR)
  (OSM, HERE…)      (normalized)                      │
                                                      ├─► GraphCompressor (shrink)
