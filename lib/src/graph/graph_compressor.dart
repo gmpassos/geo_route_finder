@@ -175,6 +175,7 @@ class GraphCompressor {
         var dist = g.adjDist[e];
         var time = g.adjTime[e];
         var tolls = g.adjToll[e];
+        var signals = g.adjSignal[e];
         final geom = <GeoCoordinate>[...g.geometryOf(e)];
 
         while (contractible[cur] && cur != a) {
@@ -185,12 +186,13 @@ class GraphCompressor {
           dist += g.adjDist[nextEdge];
           time += g.adjTime[nextEdge];
           tolls += g.adjToll[nextEdge];
+          signals += g.adjSignal[nextEdge];
           geom.addAll(g.geometryOf(nextEdge));
           cur = g.adjTarget[nextEdge];
         }
 
         if (cur == a) continue; // drop self-loops
-        merged.add(_MergedEdge(a, cur, dist, time, tolls, geom));
+        merged.add(_MergedEdge(a, cur, dist, time, tolls, signals, geom));
       }
     }
 
@@ -256,6 +258,7 @@ class GraphCompressor {
     final adjTime = Float64List(em);
     final adjDist = Float64List(em);
     final adjToll = Uint8List(em);
+    final adjSignal = Uint8List(em);
     final geomOffset = Int32List(em + 1);
     final geomBuilder = <double>[];
     for (var i = 0; i < em; i++) {
@@ -264,6 +267,10 @@ class GraphCompressor {
       adjTime[i] = m.time;
       adjDist[i] = m.dist;
       adjToll[i] = m.tolls;
+      // Saturating: the array is a byte, and a chain with more than 255 lights
+      // on it is a number nobody reads for precision anyway. The *delay* is
+      // unaffected, because it lives in `time`.
+      adjSignal[i] = m.signals > 255 ? 255 : m.signals;
       geomOffset[i] = geomBuilder.length ~/ 2;
       for (final c in m.geometry) {
         geomBuilder.add(c.lat);
@@ -281,6 +288,7 @@ class GraphCompressor {
       adjTime: adjTime,
       adjDist: adjDist,
       adjToll: adjToll,
+      adjSignal: adjSignal,
       geomCoords: Float64List.fromList(geomBuilder),
       geomOffset: geomOffset,
     );
@@ -301,6 +309,17 @@ class _MergedEdge {
   final double dist;
   final double time;
   final int tolls;
+
+  /// Signalised junctions swallowed by the merge.
+  ///
+  /// A light on a degree-2 vertex — a signalised pedestrian crossing mid-block
+  /// is the common case — loses its vertex here, and the count has to come
+  /// with it or a street full of crossings compresses into a street with none.
+  ///
+  /// Its *delay* needs no special handling: that is already part of [time],
+  /// which is summed along the chain like any other seconds.
+  final int signals;
+
   final List<GeoCoordinate> geometry;
   int newSource = 0;
   int newTarget = 0;
@@ -310,6 +329,7 @@ class _MergedEdge {
     this.dist,
     this.time,
     this.tolls,
+    this.signals,
     this.geometry,
   );
 }

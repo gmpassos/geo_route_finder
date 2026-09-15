@@ -40,6 +40,9 @@ library;
 // this library exactly as before. These are the same types, not wrappers.
 export 'package:geo_osm_pbf/geo_osm_pbf.dart';
 
+// What version produced an artefact, for a builder that has to record it.
+export 'src/version.dart';
+
 // Model — the routing-specific types built on top of that model.
 export 'src/model/geo_edge.dart';
 export 'src/model/geo_graph.dart';

@@ -20,7 +20,32 @@ import 'graph_types.dart';
 /// objects, so building a regional graph stays fast and produces little GC
 /// pressure.
 class GraphBuilder {
-  const GraphBuilder();
+  /// Seconds added to a traversal that arrives at a signalised junction.
+  ///
+  /// **An average over arrivals, not a worst case.** A driver reaching a set
+  /// of lights waits the whole red phase, half of it, or nothing at all
+  /// depending on when they get there; across many arrivals at a typical urban
+  /// cycle that averages out to something in the tens of seconds. Twenty is a
+  /// defensible middle and, more importantly, is the right *order* — which is
+  /// all the cost function needs to prefer three junctions over fifteen.
+  ///
+  /// It is folded into the time weight rather than kept beside it, so every
+  /// router minimises it without knowing it exists, and a route's reported
+  /// duration includes the waiting a rider will actually do.
+  ///
+  /// Tune it against real journey times rather than by taste: too low and the
+  /// arterial always wins as before, too high and the router sends riders down
+  /// residential streets to dodge a light that was never going to cost them a
+  /// minute.
+  static const double defaultSignalDelaySeconds = 20;
+
+  /// Seconds charged per signalised junction — see
+  /// [defaultSignalDelaySeconds]. Zero disables the delay while still counting
+  /// the junctions, which is what a caller wants to compare routes with and
+  /// without it.
+  final double signalDelaySeconds;
+
+  const GraphBuilder({this.signalDelaySeconds = defaultSignalDelaySeconds});
 
   /// Builds a [RoutingGraph] from [graph].
   RoutingGraph build(GeoGraph graph) {
@@ -94,8 +119,17 @@ class GraphBuilder {
     final dist = Float64List(m);
     final time = Float64List(m);
     final toll = Uint8List(m);
+    final signal = Uint8List(m);
     final edgeRef = Int32List(m);
     final reversed = Uint8List(m);
+
+    // Resolved to dense indices once. The lookup below runs per *directed*
+    // edge, and a city has hundreds of thousands of them.
+    final signalSlots = <int>{
+      for (final id in graph.signalNodeIds)
+        if (indexOf[id] != null) indexOf[id]!,
+    };
+
     var k = 0;
     for (var ei = 0; ei < inEdges.length; ei++) {
       final e = inEdges[ei];
@@ -103,11 +137,20 @@ class GraphBuilder {
       final t = indexOf[e.targetId];
       if (s == null || t == null) continue;
       final tollCount = e.tolls;
+
+      // Each direction is charged for the junction it *arrives* at, which is
+      // the whole reason signals live on the graph rather than on the edge: a
+      // two-way street is one `GeoEdge`, and its two directions end at
+      // opposite ends of it.
+      final forwardSignal = signalSlots.contains(t) ? 1 : 0;
+      final backwardSignal = signalSlots.contains(s) ? 1 : 0;
+
       src[k] = s;
       tgt[k] = t;
       dist[k] = e.distanceMeters;
-      time[k] = e.travelTimeSeconds;
+      time[k] = e.travelTimeSeconds + forwardSignal * signalDelaySeconds;
       toll[k] = tollCount;
+      signal[k] = forwardSignal;
       edgeRef[k] = ei;
       reversed[k] = 0;
       k++;
@@ -115,8 +158,9 @@ class GraphBuilder {
         src[k] = t;
         tgt[k] = s;
         dist[k] = e.distanceMeters;
-        time[k] = e.travelTimeSeconds;
+        time[k] = e.travelTimeSeconds + backwardSignal * signalDelaySeconds;
         toll[k] = tollCount;
+        signal[k] = backwardSignal;
         edgeRef[k] = ei;
         reversed[k] = 1;
         k++;
@@ -173,6 +217,7 @@ class GraphBuilder {
     final adjTime = Float64List(m);
     final adjDist = Float64List(m);
     final adjToll = Uint8List(m);
+    final adjSignal = Uint8List(m);
     final geomOffset = Int32List(m + 1);
     final geomCoords = Float64List(totalPoints * 2);
 
@@ -184,6 +229,7 @@ class GraphBuilder {
       adjTime[i] = time[d];
       adjDist[i] = dist[d];
       adjToll[i] = toll[d];
+      adjSignal[i] = signal[d];
       geomOffset[i] = point;
 
       final shape = inEdges[edgeRef[d]].shapePoints;
@@ -220,6 +266,7 @@ class GraphBuilder {
       adjTime: adjTime,
       adjDist: adjDist,
       adjToll: adjToll,
+      adjSignal: adjSignal,
       geomCoords: geomCoords,
       geomOffset: geomOffset,
     );

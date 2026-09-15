@@ -86,6 +86,12 @@ Uint8List buildWayPbf({
   List<int> nodeIds = const [1, 2, 3],
   List<double> lats = const [-23.5, -23.49, -23.49],
   List<double> lons = const [-46.7, -46.7, -46.69],
+
+  /// Tags for individual nodes, by node id, encoded into the dense
+  /// `keys_vals` stream — which is how a real file carries them, and the only
+  /// way to drive the converter's tagged-node path through a real byte
+  /// sequence rather than around it.
+  Map<int, Map<String, String>> taggedNodes = const {},
   bool compress = false,
 }) {
   int latVal(double deg) => (deg / 1e-7).round();
@@ -102,11 +108,27 @@ Uint8List buildWayPbf({
     wayVals.add(intern(v));
   });
 
+  // One (key, value) run per node in order, each terminated by a zero. The
+  // terminator is written even for an untagged node: omit it and every later
+  // node's tags land on the wrong node.
+  final nodeKeysVals = <int>[];
+  if (taggedNodes.isNotEmpty) {
+    for (final id in nodeIds) {
+      (taggedNodes[id] ?? const <String, String>{}).forEach((k, v) {
+        nodeKeysVals
+          ..add(intern(k))
+          ..add(intern(v));
+      });
+      nodeKeysVals.add(0);
+    }
+  }
+
   final block = _primitiveBlock(
     strings: strings,
     nodeIds: nodeIds,
     lats: [for (final v in lats) latVal(v)],
     lons: [for (final v in lons) latVal(v)],
+    nodeKeysVals: nodeKeysVals,
     wayId: 10,
     wayKeys: wayKeys,
     wayVals: wayVals,
@@ -163,6 +185,7 @@ Uint8List _primitiveBlock({
   required List<int> wayKeys,
   required List<int> wayVals,
   required List<int> wayRefs,
+  List<int> nodeKeysVals = const [],
 }) {
   final st = BytesBuilder();
   for (final s in strings) {
@@ -173,6 +196,12 @@ Uint8List _primitiveBlock({
   _writePackedSInt(dense, 1, _delta(nodeIds));
   _writePackedSInt(dense, 8, _delta(lats));
   _writePackedSInt(dense, 9, _delta(lons));
+  // Field 10, and only when there is something to say: a reader is entitled to
+  // skip the stream entirely when it is absent, which is the behaviour
+  // `readSignals: false` depends on.
+  if (nodeKeysVals.isNotEmpty) {
+    _writePackedVarint(dense, 10, nodeKeysVals);
+  }
 
   final way = BytesBuilder();
   _writeVarint(way, (1 << 3));

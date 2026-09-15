@@ -7,7 +7,16 @@ import '../spatial/kd_tree.dart';
 ///
 /// v2 added the per-edge `adjToll` array (one byte per directed edge), appended
 /// after the existing 8- and 4-byte arrays to preserve their alignment.
-const int kGraphFormatVersion = 2;
+///
+/// v3 added `adjSignal` beside it, on the same terms and for the same reason:
+/// a count of signalised junctions entered per edge.
+///
+/// **Every stored graph has to be rebuilt**, and deliberately so. A v2 graph's
+/// `adjTime` was computed without signal delay, so reading one as a v3 would
+/// give routes whose cost silently disagrees with every route planned since —
+/// a difference no field in the file would reveal. Refusing it is the only
+/// honest option.
+const int kGraphFormatVersion = 3;
 
 /// `'GRF1'` magic for the `.graph` payload.
 const int _graphMagic0 = 0x47; // G
@@ -44,7 +53,7 @@ class GraphSerializer {
     const header = 24;
     final f64Bytes = 8 * (3 * n + 2 * m + 2 * gp);
     final i32Bytes = 4 * ((n + 1) + m + (m + 1));
-    final u8Bytes = m; // adjToll, one byte per edge
+    final u8Bytes = 2 * m; // adjToll and adjSignal, one byte each per edge
     final total = header + f64Bytes + i32Bytes + u8Bytes;
 
     final out = Uint8List(total);
@@ -84,9 +93,11 @@ class GraphSerializer {
     putI32(g.adjOffset);
     putI32(g.adjTarget);
     putI32(g.geomOffset);
-    // 1-byte array last so the 8- and 4-byte arrays above stay aligned.
+    // 1-byte arrays last so the 8- and 4-byte arrays above stay aligned.
     out.setRange(off, off + g.adjToll.length, g.adjToll);
     off += g.adjToll.length;
+    out.setRange(off, off + g.adjSignal.length, g.adjSignal);
+    off += g.adjSignal.length;
 
     return out;
   }
