@@ -52,6 +52,17 @@
   silently disagrees with every route planned since — a difference no field in
   the file would reveal.
 
+- **`geoRouteFinderVersion` and `geoRouteFinderId`**, so a tool that compiles a
+  graph can record which release compiled it. Dart cannot read `pubspec.yaml`
+  at runtime and a compiled executable has none beside it, so the version has
+  to be repeated in code; `test/version_test.dart` reads the pubspec and
+  compares, which is what keeps the repetition honest.
+
+  It earns its place in this release more than it would in another one.
+  `kGraphFormatVersion` tells a reader *that* it is refusing a file; only the
+  package version tells anyone *what wrote it*, and with v2 graphs now being
+  refused that is the next question after the refusal.
+
 ## 1.1.0
 
 - **OSM acquisition and decoding moved to the new `geo_osm_pbf` package**, so
