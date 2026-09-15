@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:geo_route_finder/geo_route_finder.dart';
 import 'package:test/test.dart';
 
@@ -313,7 +315,174 @@ void main() {
     });
   });
 
+  group('every router agrees', () {
+    // Contraction hierarchies are the reason this group exists. CH inserts
+    // *shortcut* edges during preprocessing, and a shortcut carries no
+    // `adjSignal` of its own — it is unpacked back into original edges before
+    // a path is built. That makes the count correct by construction, which is
+    // exactly the kind of claim that stops being true quietly.
+    late Directory dir;
+    late MemoryStorage generic;
+    late LocalFileStorage compiled;
+
+    setUp(() async {
+      final geo = GeoGraph(
+        nodes: const [
+          GeoNode(id: 1, lat: -23.500, lon: -46.700),
+          GeoNode(id: 2, lat: -23.500, lon: -46.690),
+          GeoNode(id: 3, lat: -23.500, lon: -46.680),
+          GeoNode(id: 4, lat: -23.500, lon: -46.670),
+          GeoNode(id: 5, lat: -23.500, lon: -46.660),
+        ],
+        edges: const [
+          GeoEdge(sourceId: 1, targetId: 2, distanceMeters: 1000, speedKmh: 36),
+          GeoEdge(sourceId: 2, targetId: 3, distanceMeters: 1000, speedKmh: 36),
+          GeoEdge(sourceId: 3, targetId: 4, distanceMeters: 1000, speedKmh: 36),
+          GeoEdge(sourceId: 4, targetId: 5, distanceMeters: 1000, speedKmh: 36),
+        ],
+        signalNodeIds: const {2, 3, 4},
+      );
+
+      generic = MemoryStorage();
+      await generic.saveGraph('signals', geo);
+
+      dir = Directory.systemTemp.createTempSync('grf_signals_');
+      compiled = LocalFileStorage(directory: dir.path);
+      await compiled.saveGraph('signals', geo);
+    });
+
+    tearDown(() => dir.deleteSync(recursive: true));
+
+    GraphRouteFinder routerOf(String type, GeoStorage storage) =>
+        switch (type) {
+          'dijkstra' => DijkstraRouter(storage: storage, graphId: 'signals'),
+          'astar' => AStarRouter(storage: storage, graphId: 'signals'),
+          'ch' => ContractionHierarchyRouter(
+            storage: storage,
+            graphId: 'signals',
+          ),
+          _ => throw ArgumentError(type),
+        };
+
+    for (final type in ['dijkstra', 'astar', 'ch']) {
+      for (final backend in ['generic', 'compiled']) {
+        test('$type via $backend counts and charges the same', () async {
+          // The compiled backend matters as much as the algorithm: it is the
+          // one that round-trips `adjSignal` through the on-disk format before
+          // anything routes over it.
+          final storage = backend == 'generic'
+              ? generic as GeoStorage
+              : compiled;
+
+          final route = await routerOf(type, storage).findRoute(
+            const GeoCoordinate(lat: -23.500, lon: -46.700),
+            const GeoCoordinate(lat: -23.500, lon: -46.660),
+          );
+
+          final ctx = '$type via $backend';
+
+          expect(route.found, isTrue, reason: ctx);
+
+          // Lights at 2, 3 and 4. The one at the origin is not charged,
+          // because nothing arrives there.
+          expect(route.signalCount, equals(3), reason: ctx);
+
+          // 4 km at 36 km/h is 400 s, plus three junctions.
+          expect(
+            route.duration.inSeconds,
+            closeTo(400 + 3 * GraphBuilder.defaultSignalDelaySeconds, 2),
+            reason: ctx,
+          );
+        });
+      }
+    }
+  });
+
   group('reading them out of OSM', () {
+    /// Converts a synthetic extract carrying [nodeTags] into a graph.
+    Future<GeoGraph> convert(
+      Map<int, Map<String, String>> nodeTags, {
+      bool readSignals = true,
+    }) async {
+      final dir = await Directory.systemTemp.createTemp('signals_pbf');
+      addTearDown(() => dir.deleteSync(recursive: true));
+
+      final file = File('${dir.path}/extract.osm.pbf')
+        ..writeAsBytesSync(
+          buildWayPbf(
+            tags: const {'highway': 'residential'},
+            taggedNodes: nodeTags,
+          ),
+        );
+
+      return OsmConverter(readSignals: readSignals).toGeoGraph(file.path);
+    }
+
+    test('a light in the extract becomes a light in the graph', () async {
+      // End to end through real bytes: the tag stream has to be decoded, the
+      // node matched, and the id kept. Testing `isSignalNode` alone proves the
+      // classification and nothing about whether it is ever called.
+      final geo = await convert(const {
+        2: {'highway': 'traffic_signals'},
+      });
+
+      expect(geo.signalNodeIds, equals({2}));
+      expect(geo.signalCount, equals(1));
+    });
+
+    test('and is charged to whichever direction arrives at it', () async {
+      // The fixture's way runs 1 - 2 - 3 with the light at 2, so *two*
+      // directed edges end there: 1→2 and 3→2. Both are charged, and that is
+      // right — a rider meets that light coming either way. What must not
+      // happen is a single pass paying twice, and it does not: one journey
+      // traverses one of those edges, never both.
+      final geo = await convert(const {
+        2: {'highway': 'traffic_signals'},
+      });
+
+      final g = const GraphBuilder().build(geo);
+
+      final chargedAt = [
+        for (var e = 0; e < g.edgeCount; e++)
+          if (g.signalsOf(e) > 0) g.originalId[g.adjTarget[e]],
+      ];
+
+      expect(
+        chargedAt,
+        equals([2, 2]),
+        reason: 'both approaches to the junction, and nothing else',
+      );
+    });
+
+    test('declining to read them costs nothing and finds none', () async {
+      final geo = await convert(const {
+        2: {'highway': 'traffic_signals'},
+      }, readSignals: false);
+
+      expect(geo.signalNodeIds, isEmpty);
+      // The road is still there: turning signals off must not change routing
+      // in any other way.
+      expect(geo.edges, isNotEmpty);
+    });
+
+    test('an extract with no tagged nodes at all still converts', () async {
+      // The common case, and the one where the `keys_vals` stream is absent
+      // from the file entirely rather than present and empty.
+      final geo = await convert(const {});
+
+      expect(geo.signalNodeIds, isEmpty);
+      expect(geo.edges, isNotEmpty);
+    });
+
+    test('a tagged node that is not a control is ignored', () async {
+      final geo = await convert(const {
+        2: {'highway': 'street_lamp'},
+        3: {'amenity': 'bench'},
+      });
+
+      expect(geo.signalNodeIds, isEmpty);
+    });
+
     test('a traffic signal node is one', () {
       expect(
         OsmConverter.isSignalNode(const {'highway': 'traffic_signals'}),
