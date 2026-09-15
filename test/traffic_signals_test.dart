@@ -532,4 +532,115 @@ void main() {
       }
     });
   });
+
+  group('saying so out loud', () {
+    // The cost is invisible by construction — it is folded into a weight — so
+    // everything that makes it *explicable* is a reporting surface, and an
+    // unreported delay is indistinguishable from a bug in the router. These
+    // cover that surface.
+
+    test('`hasSignal` answers the yes/no the count does not', () {
+      // `signalsOf` is the number charged; this is the question a caller
+      // actually asks of one edge, and a compressed chain can carry several.
+      final g = const GraphBuilder().build(_pair(signalAt: {2}));
+
+      final toTheLight = [
+        for (var e = 0; e < g.edgeCount; e++)
+          if (g.originalId[g.adjTarget[e]] == 2) e,
+      ].single;
+      final awayFromIt = [
+        for (var e = 0; e < g.edgeCount; e++)
+          if (g.originalId[g.adjTarget[e]] == 1) e,
+      ].single;
+
+      expect(g.hasSignal(toTheLight), isTrue);
+      expect(g.hasSignal(awayFromIt), isFalse);
+
+      // And it agrees with the count rather than being a second opinion.
+      for (var e = 0; e < g.edgeCount; e++) {
+        expect(g.hasSignal(e), equals(g.signalsOf(e) != 0));
+      }
+    });
+
+    test('a graph counts its signalised junctions', () {
+      expect(_pair().signalCount, isZero);
+      expect(_pair(signalAt: {2}).signalCount, equals(1));
+      expect(_pair(signalAt: {1, 2}).signalCount, equals(2));
+    });
+
+    test('and names them when it has them, silently when it has none', () {
+      // A graph with no signals reads exactly as it did before this release —
+      // ", 0 signals" on every log line from a city that has none surveyed
+      // would be noise dressed as information.
+      expect(_pair().toString(), equals('GeoGraph(2 nodes, 1 edges)'));
+      expect(
+        _pair(signalAt: {2}).toString(),
+        equals('GeoGraph(2 nodes, 1 edges, 1 signals)'),
+      );
+    });
+
+    test('a route says how many it passed', () async {
+      // This is the line that explains the answer. "Eleven sets of lights" is
+      // *why* the longer way round came out faster; without it that route just
+      // looks like a mistake.
+      final storage = MemoryStorage();
+      await storage.saveGraph('signals', _pair(signalAt: {2}));
+
+      final route = await DijkstraRouter(storage: storage, graphId: 'signals')
+          .findRoute(
+            const GeoCoordinate(lat: -23.50, lon: -46.70),
+            const GeoCoordinate(lat: -23.50, lon: -46.69),
+          );
+
+      expect(route.found, isTrue);
+      expect(route.signalCount, equals(1));
+      expect(route.hasSignals, isTrue);
+      expect(route.toString(), contains('1 signals'));
+    });
+
+    test('and a route that found nothing says nothing about them', () async {
+      // Not `0 signals`: a route that does not exist passed nothing, and a
+      // count of zero would read as a finding about a path that has none.
+      //
+      // Two disjoint streets rather than an off-map destination — snapping
+      // takes the nearest vertex however far away it is, so a coordinate in
+      // the Atlantic still routes. Unreachable has to mean unconnected.
+      final storage = MemoryStorage();
+      await storage.saveGraph(
+        'islands',
+        GeoGraph(
+          nodes: const [
+            GeoNode(id: 1, lat: -23.50, lon: -46.70),
+            GeoNode(id: 2, lat: -23.50, lon: -46.69),
+            GeoNode(id: 3, lat: -23.60, lon: -46.60),
+            GeoNode(id: 4, lat: -23.60, lon: -46.59),
+          ],
+          edges: const [
+            GeoEdge(
+              sourceId: 1,
+              targetId: 2,
+              distanceMeters: 1000,
+              speedKmh: 36,
+            ),
+            GeoEdge(
+              sourceId: 3,
+              targetId: 4,
+              distanceMeters: 1000,
+              speedKmh: 36,
+            ),
+          ],
+          signalNodeIds: const {2},
+        ),
+      );
+
+      final route = await DijkstraRouter(storage: storage, graphId: 'islands')
+          .findRoute(
+            const GeoCoordinate(lat: -23.50, lon: -46.70),
+            const GeoCoordinate(lat: -23.60, lon: -46.59),
+          );
+
+      expect(route.found, isFalse);
+      expect(route.toString(), equals('GeoRoute(no route)'));
+    });
+  });
 }
