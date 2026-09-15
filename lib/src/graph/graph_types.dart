@@ -45,6 +45,18 @@ class RoutingGraph {
   /// time when a route is asked to avoid tolls and to report its toll count.
   final Uint8List adjToll;
 
+  /// Number of signalised junctions entered by traversing each edge
+  /// (`0` = none), length [edgeCount].
+  ///
+  /// **The delay is already folded into [adjTime]** — this array is what a
+  /// route *reports*, not what it costs. Charging it again at query time would
+  /// count every light twice.
+  ///
+  /// Counts accumulate when degree-2 chains are collapsed, exactly as
+  /// [adjToll] does: a light at a vertex the compressor removes has to survive
+  /// the removal, or a street's worth of junctions vanishes from the answer.
+  final Uint8List adjSignal;
+
   /// Per-edge intermediate geometry, interleaved `lat, lon` pairs. The points
   /// for edge `e` are `[geomOffset[e], geomOffset[e+1])` measured in *points*
   /// (each point being two consecutive doubles in [geomCoords]). Endpoints are
@@ -63,6 +75,7 @@ class RoutingGraph {
     required this.adjTime,
     required this.adjDist,
     required this.adjToll,
+    required this.adjSignal,
     required this.geomCoords,
     required this.geomOffset,
   });
@@ -75,6 +88,12 @@ class RoutingGraph {
 
   /// Whether edge [e] crosses at least one toll.
   bool isToll(int e) => adjToll[e] != 0;
+
+  /// Number of signalised junctions entered by traversing edge [e].
+  int signalsOf(int e) => adjSignal[e];
+
+  /// Whether traversing edge [e] arrives at a set of lights.
+  bool hasSignal(int e) => adjSignal[e] != 0;
 
   /// Coordinate of vertex [v].
   GeoCoordinate coordinateOf(int v) => GeoCoordinate(lat: lat[v], lon: lon[v]);

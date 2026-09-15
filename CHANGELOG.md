@@ -1,3 +1,57 @@
+## 1.2.0
+
+- **Traffic lights are part of the cost.** A route through fifteen signalised
+  junctions is genuinely slower than one through three, and a router that
+  cannot see them keeps choosing the straight run down the arterial over the
+  quiet parallel street that is actually quicker. Now it can.
+
+  `GeoGraph.signalNodeIds` carries the junctions; `GraphBuilder` charges
+  `signalDelaySeconds` (20 s by default) to each traversal that *arrives* at
+  one, folded into the time weight every router already minimises. Nothing in
+  A*, Dijkstra or the contraction hierarchy had to learn about it.
+
+- **Signals are a property of nodes, and that is not a detail.** A light delays
+  whoever arrives at the junction, so the cost belongs to the traversal that
+  ends there — and a two-way street is *one* `GeoEdge` from which the builder
+  materialises both directions. Recorded per edge, the reverse direction would
+  arrive at the far end and either miss its light or inherit one it never
+  reaches. Recorded on the graph, each direction is charged for the junction it
+  actually enters, and an adapter never has to split a street in two.
+
+- **They survive compression.** A light on a degree-2 vertex — a signalised
+  pedestrian crossing mid-block is the common case — loses its vertex to the
+  chain compressor, and `adjSignal` accumulates through the merge exactly as
+  `adjToll` does. Without that, a street full of crossings would compress into
+  a street with none. The *delay* needs no special handling: it is already part
+  of the merged time.
+
+- **`GeoRoute.signalCount` reports what was passed**, so a caller can explain
+  the answer. "Eleven sets of lights" is *why* the longer way round came out
+  faster; without it that route just looks like a mistake. Reported and not
+  charged — the waiting is already inside `duration`, and counting it twice
+  would be the obvious bug here.
+
+- **`OsmConverter` reads them from the extract**, on the pass that already
+  reads node coordinates. `readSignals: false` declines the cost, which is
+  decoding the node tag stream — otherwise skipped whole, and mostly untagged
+  shape points. Paid once per graph, never at query time.
+
+  Traffic lights only, which is narrower than what a map *draws*.
+  `geo_tile_builder`'s `DeliverySchema` also renders stop and give-way signs
+  because a driver wants to see them; they are left out of the cost because the
+  graph carries a count rather than a per-class delay, and a stop sign is a few
+  seconds against a light's tens. Folding them in at the same weight would say
+  a street of stop signs costs as much as a street of lights, which is worse
+  than saying nothing. A signalised pedestrian crossing *is* a set of lights
+  and does count.
+
+- **Graph format v3.** `adjSignal` sits beside `adjToll`, one byte per directed
+  edge, after the 8- and 4-byte arrays so their alignment is untouched.
+  **Every stored graph must be rebuilt.** A v2 graph's `adjTime` was computed
+  without signal delay, so reading one as a v3 would give routes whose cost
+  silently disagrees with every route planned since — a difference no field in
+  the file would reveal.
+
 ## 1.1.0
 
 - **OSM acquisition and decoding moved to the new `geo_osm_pbf` package**, so

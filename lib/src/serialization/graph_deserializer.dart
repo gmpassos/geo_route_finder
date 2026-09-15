@@ -90,6 +90,7 @@ class GraphDeserializer {
     final adjTarget = takeI32(m);
     final geomOffset = takeI32(m + 1);
     final adjToll = takeU8(m);
+    final adjSignal = takeU8(m);
 
     return RoutingGraph(
       lat: lat,
@@ -100,6 +101,7 @@ class GraphDeserializer {
       adjTime: adjTime,
       adjDist: adjDist,
       adjToll: adjToll,
+      adjSignal: adjSignal,
       geomCoords: geomCoords,
       geomOffset: geomOffset,
     );

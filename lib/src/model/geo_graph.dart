@@ -16,7 +16,27 @@ class GeoGraph {
   /// All directed (or bidirectional, via [GeoEdge.oneWay]) connections.
   final List<GeoEdge> edges;
 
-  const GeoGraph({required this.nodes, required this.edges});
+  /// Ids of the vertices that are signalised junctions — a set of traffic
+  /// lights on the road.
+  ///
+  /// **A property of nodes, not of edges, and it has to be.** A light delays
+  /// whoever arrives at the junction, so the cost belongs to the traversal
+  /// that ends there — and a two-way street is *one* [GeoEdge] from which the
+  /// builder materialises both directions. Recorded per edge, the reverse
+  /// direction would arrive at the far end and either miss its light or
+  /// inherit one it never reaches. Recorded here, the builder charges each
+  /// directed edge for the junction it actually enters, and both directions
+  /// come out right without an adapter having to split the street in two.
+  ///
+  /// Empty for a source that knows nothing about signals, which costs nothing
+  /// and reads as "no lights modelled" rather than "no lights here".
+  final Set<int> signalNodeIds;
+
+  const GeoGraph({
+    required this.nodes,
+    required this.edges,
+    this.signalNodeIds = const {},
+  });
 
   /// An empty graph.
   static const GeoGraph empty = GeoGraph(nodes: [], edges: []);
@@ -24,6 +44,11 @@ class GeoGraph {
   int get nodeCount => nodes.length;
   int get edgeCount => edges.length;
 
+  /// How many vertices are signalised junctions.
+  int get signalCount => signalNodeIds.length;
+
   @override
-  String toString() => 'GeoGraph(${nodes.length} nodes, ${edges.length} edges)';
+  String toString() =>
+      'GeoGraph(${nodes.length} nodes, ${edges.length} edges'
+      '${signalNodeIds.isEmpty ? '' : ', ${signalNodeIds.length} signals'})';
 }

@@ -402,17 +402,23 @@ abstract class GraphRouteFinder implements RouteFinder {
     final g = graph;
     geometry.add(g.coordinateOf(path.vertices.first));
     var tollCount = 0;
+    var signalCount = 0;
     for (var i = 0; i < path.edges.length; i++) {
       final e = path.edges[i];
       tollCount += g.adjToll[e];
+      signalCount += g.adjSignal[e];
       geometry.addAll(g.geometryOf(e));
       geometry.add(g.coordinateOf(path.vertices[i + 1]));
     }
     return GeoRoute(
       distanceMeters: path.distanceMeters,
+      // Already includes the waiting at the junctions counted above: the delay
+      // is part of each edge's weight, so the search minimised it and
+      // `timeSeconds` carries it without anything being added here.
       duration: Duration(microseconds: (path.timeSeconds * 1e6).round()),
       geometry: geometry,
       tollCount: tollCount,
+      signalCount: signalCount,
     );
   }
 

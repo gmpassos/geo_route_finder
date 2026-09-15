@@ -41,13 +41,54 @@ class OsmConverter {
   /// recommended; reduces size and speeds up routing.
   final bool compress;
 
+  /// Whether to count signalised junctions, so routing can prefer the way
+  /// round them.
+  ///
+  /// A route through fifteen sets of lights is genuinely slower than one
+  /// through three, and a router that cannot see them will keep choosing the
+  /// straight run down the arterial over the quiet parallel street that is
+  /// actually quicker. Counting them is what lets the cost say so — see
+  /// `GraphBuilder.signalDelaySeconds`.
+  ///
+  /// The cost of `true` is decoding the node tag stream during the pass that
+  /// already reads node coordinates. That stream is otherwise skipped whole,
+  /// and it is mostly untagged shape points, so this is a real addition to
+  /// build time — paid once per graph, never at query time.
+  final bool readSignals;
+
   OsmConverter({
     this.parser = const OsmPbfParser(),
     this.builder = const GraphBuilder(),
     GraphCompressor? compressor,
     this.profile = VehicleProfile.car,
     this.compress = true,
+    this.readSignals = true,
   }) : compressor = compressor ?? GraphCompressor();
+
+  /// Whether a node's tags describe a junction that stops traffic.
+  ///
+  /// Traffic lights only, and that is narrower than what a map *draws*.
+  /// `DeliverySchema` in `geo_tile_builder` also renders stop and give-way
+  /// signs, because a driver wants to see them; they are left out of the cost
+  /// because the graph carries a count rather than a per-class delay, and a
+  /// stop sign is a few seconds against a light's tens. Folding them in at the
+  /// same weight would say a street of stop signs costs as much as a street of
+  /// lights, which is worse than saying nothing.
+  ///
+  /// A signalised pedestrian crossing is a set of lights and counts. An
+  /// unsignalised one does not stop traffic and does not.
+  static bool isSignalNode(Map<String, String> tags) {
+    final highway = tags['highway'];
+
+    if (highway == 'traffic_signals') return true;
+
+    if (highway == 'crossing') {
+      return tags['crossing'] == 'traffic_signals' ||
+          tags['crossing:signals'] == 'yes';
+    }
+
+    return false;
+  }
 
   /// Routable highway classes for the default car profile (after stripping any
   /// `_link` suffix). Retained for backward compatibility; prefer
@@ -74,14 +115,31 @@ class OsmConverter {
       },
     );
 
-    // Pass 2: nodes. Keep only coordinates referenced by a kept way.
+    // Pass 2: nodes. Keep only coordinates referenced by a kept way, and note
+    // which of them are signalised junctions.
+    //
+    // `onTaggedNode` rides along with a pass that is already reading nodes, so
+    // the extra work is decoding the tag stream rather than a third scan over
+    // the extract — which is the cost [readSignals] exists to let a caller
+    // decline.
     final coords = <int, GeoNode>{};
+    final signalNodes = <int>{};
+
     await parser.parse(
       inputFile,
       readWays: false,
       onNode: (node) {
         if (neededNodes.contains(node.id)) coords[node.id] = node;
       },
+      onTaggedNode: !readSignals
+          ? null
+          : (node) {
+              // Only junctions this profile's network actually reaches. A
+              // light on a street a car may not use is not a delay a car will
+              // ever pay.
+              if (!neededNodes.contains(node.id)) return;
+              if (isSignalNode(node.tags)) signalNodes.add(node.id);
+            },
     );
 
     // Assemble the generic graph: one edge per consecutive node pair.
@@ -124,7 +182,15 @@ class OsmConverter {
     }
 
     final nodes = coords.values.toList();
-    return GeoGraph(nodes: nodes, edges: edges);
+
+    return GeoGraph(
+      nodes: nodes,
+      edges: edges,
+      // Narrowed to nodes that survived: a light referenced by a way whose
+      // coordinates the extract does not contain is not a junction this graph
+      // can route through.
+      signalNodeIds: signalNodes.where(coords.containsKey).toSet(),
+    );
   }
 
   /// Compiles [inputFile] into a [CompiledGraph] (CSR + KD-tree + metadata).
