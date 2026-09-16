@@ -1758,6 +1758,154 @@ void main() {
       expect(text, contains('1 unresolved'));
       expect(text, contains('2 contradictory'));
       expect(text, contains('3 inert'));
+      expect(text, contains('0 orphaned'));
+    });
+
+    /// Two one-way approaches, two one-way exits, and a sign on each approach
+    /// sending it to the same exit — so the other exit is left with no way in.
+    ///
+    /// Drawn from OSM node 1874470572, where Rodovia Admar Gonzaga (SC-404)
+    /// meets Avenida Madre Benvenuta in Florianópolis. Relation 2364753
+    /// (`only_straight_on`, from Madre Benvenuta) and relation 21323550
+    /// (`only_left_turn`, from Admar Gonzaga) both name the same slip road,
+    /// which leaves the SC-404's own continuation unenterable. The graph obeyed
+    /// both, the router detoured, and nothing in the build said why.
+    ///
+    ///     1 ——→ 3 ——→ 5      1,2 approach; 4 is the slip road both
+    ///           ↑ ↘          signs name; 5 is the severed mainline
+    ///           2   4
+    GeoGraph severed({
+      bool secondApproachRestricted = true,
+      bool isOnly = true,
+    }) {
+      const nodes = [
+        GeoNode(id: 1, lat: -23.500, lon: -46.700),
+        GeoNode(id: 2, lat: -23.510, lon: -46.690),
+        GeoNode(id: 3, lat: -23.500, lon: -46.690),
+        GeoNode(id: 4, lat: -23.510, lon: -46.680),
+        GeoNode(id: 5, lat: -23.500, lon: -46.680),
+      ];
+
+      const edges = [
+        GeoEdge(
+          sourceId: 1,
+          targetId: 3,
+          distanceMeters: 500,
+          speedKmh: 60,
+          oneWay: true,
+        ),
+        GeoEdge(
+          sourceId: 2,
+          targetId: 3,
+          distanceMeters: 500,
+          speedKmh: 60,
+          oneWay: true,
+        ),
+        GeoEdge(
+          sourceId: 3,
+          targetId: 4,
+          distanceMeters: 500,
+          speedKmh: 60,
+          oneWay: true,
+        ),
+        GeoEdge(
+          sourceId: 3,
+          targetId: 5,
+          distanceMeters: 500,
+          speedKmh: 60,
+          oneWay: true,
+        ),
+      ];
+
+      return GeoGraph(
+        nodes: nodes,
+        edges: edges,
+        turnRestrictions: [
+          GeoTurnRestriction(
+            fromNodeId: 1,
+            viaNodeId: 3,
+            toNodeId: 4,
+            isOnly: isOnly,
+          ),
+          if (secondApproachRestricted)
+            GeoTurnRestriction(
+              fromNodeId: 2,
+              viaNodeId: 3,
+              toNodeId: 4,
+              isOnly: isOnly,
+            ),
+        ],
+      );
+    }
+
+    test('reports a road every approach is forbidden to enter', () async {
+      split(severed());
+
+      expect(
+        TurnRestrictionSplitter.lastStats!.orphanedExits,
+        equals(const [OrphanedExit(viaNodeId: 3, toNodeId: 5)]),
+        reason:
+            'both signs name exit 4, so nothing may enter 5 — which is a '
+            'carriageway no vehicle can legally reach',
+      );
+    });
+
+    test('still refuses the movement it reports', () async {
+      // The point of the report is that the data is suspect, not that the
+      // graph should second-guess it. Inventing a movement no sign allows is
+      // precisely the failure this package exists to prevent, so the exit stays
+      // unreachable and the build says so.
+      final g = split(severed());
+
+      final reachable = {
+        for (var v = 0; v < g.nodeCount; v++)
+          for (var e = g.adjOffset[v]; e < g.adjOffset[v + 1]; e++)
+            if (g.originalId[v] == 3 && g.isSplitCopy(v))
+              g.originalId[g.adjTarget[e]],
+      };
+
+      expect(reachable, equals({4}));
+      expect(TurnRestrictionSplitter.lastStats!.applied, equals(2));
+    });
+
+    test('one unrestricted approach means nothing is orphaned', () async {
+      // Approach 2 carries no sign, so it reaches every exit and the junction
+      // is fine however severe the sign on approach 1 is. This is the check
+      // that keeps the report from firing on every ordinary `only_*`.
+      split(severed(secondApproachRestricted: false));
+
+      expect(TurnRestrictionSplitter.lastStats!.orphanedExits, isEmpty);
+      expect(TurnRestrictionSplitter.lastStats!.applied, equals(1));
+    });
+
+    test('a `no_*` orphans what it names, an `only_*` what it does not', () {
+      // The same two approaches and the same two signs, differing only in
+      // kind, and they strand opposite roads. `no_*` closes exit 4, the one it
+      // names; `only_*` closes exit 5, which neither sign mentions at all.
+      //
+      // That second case is why this check is worth having. Nobody writes a
+      // relation meaning to sever a road they never named — it is the reach of
+      // `only_*` that does it, and the reach is invisible in the relation.
+      split(severed(isOnly: false));
+      expect(
+        TurnRestrictionSplitter.lastStats!.orphanedExits,
+        equals(const [OrphanedExit(viaNodeId: 3, toNodeId: 4)]),
+      );
+
+      split(severed());
+      expect(
+        TurnRestrictionSplitter.lastStats!.orphanedExits,
+        equals(const [OrphanedExit(viaNodeId: 3, toNodeId: 5)]),
+      );
+    });
+
+    test('an orphaned exit reads as a place, not a number', () async {
+      // Whoever sees this has to find the junction in an editor, so the string
+      // carries the two ids that locate it rather than just a count.
+      const orphan = OrphanedExit(viaNodeId: 1874470572, toNodeId: 2380729425);
+
+      expect(orphan.toString(), contains('1874470572'));
+      expect(orphan.toString(), contains('2380729425'));
     });
 
     test('a restriction naming an exit the junction lacks is inert', () async {

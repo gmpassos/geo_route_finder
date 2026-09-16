@@ -635,6 +635,7 @@ class OsmConverter {
         contradictory: split.contradictory,
         excepted: read.excepted,
         conditions: read.conditions,
+        orphanedExits: split.orphanedExits,
       );
     }
 

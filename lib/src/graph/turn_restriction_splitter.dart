@@ -133,6 +133,7 @@ class TurnRestrictionSplitter {
       contradictory: contradictory,
       inert: inert,
       copies: copies.length,
+      orphanedExits: copies.isEmpty ? const [] : _orphanedExits(g, copies),
     );
 
     if (copies.isEmpty) return g;
@@ -196,6 +197,77 @@ class TurnRestrictionSplitter {
     }
 
     return permitted.isEmpty ? null : permitted;
+  }
+
+  /// Exits that no approach is permitted to take.
+  ///
+  /// A restriction removes a movement; between them, several can remove a
+  /// *road*. When every way into a junction is restricted and none of the
+  /// restrictions permits a particular way out, that exit is dead: no through
+  /// route can enter it, only one that happens to start on the junction itself.
+  ///
+  /// The graph is right to refuse it — the source said so — which is exactly
+  /// why this is worth reporting. A signed movement being unavailable is
+  /// ordinary; a carriageway no vehicle may enter is almost always a mapping
+  /// mistake, and the cheapest place to catch one is here, where the data has
+  /// just been read, rather than from a rider watching the route take a detour.
+  ///
+  /// The classic shape is an `only_*` written where a `no_*` was meant:
+  /// `only_left_turn` forbids everything it does not name, so one relation on
+  /// the last unrestricted approach can sever a road that every other tag on it
+  /// says runs straight through.
+  ///
+  /// **A clipped extract produces false positives.** Approaches outside the box
+  /// are missing, so a junction can look wholly restricted when it is not.
+  /// That is tolerable for something whose only effect is a line in a build
+  /// report — and the reason this reports rather than repairs. Overriding the
+  /// source here would mean inventing a movement no sign allows, which is the
+  /// failure this package exists to prevent.
+  List<OrphanedExit> _orphanedExits(RoutingGraph g, List<_Copy> copies) {
+    // Per junction: which approaches a sign governs, and what they jointly
+    // leave open. A conditionally forbidden exit counts as open — the edge is
+    // still in the graph, and whether it may be used is a question for the
+    // clock, not for this.
+    final restricted = <int, Set<int>>{};
+    final permitted = <int, Set<int>>{};
+    for (final c in copies) {
+      (restricted[c.via] ??= <int>{}).add(c.inEdge);
+      (permitted[c.via] ??= <int>{}).addAll(c.allowed.keys);
+    }
+
+    // In-degree of just those junctions, in one pass over the edge array rather
+    // than a scan per junction.
+    final inDegree = {for (final via in restricted.keys) via: 0};
+    for (var e = 0; e < g.adjTarget.length; e++) {
+      final t = g.adjTarget[e];
+      if (inDegree.containsKey(t)) inDegree[t] = inDegree[t]! + 1;
+    }
+
+    final found = <OrphanedExit>[];
+    for (final via in restricted.keys) {
+      // One unrestricted approach reaches every exit, so nothing here is
+      // orphaned however severe the other signs are.
+      if (restricted[via]!.length < inDegree[via]!) continue;
+
+      final open = permitted[via]!;
+      for (var e = g.adjOffset[via]; e < g.adjOffset[via + 1]; e++) {
+        if (open.contains(e)) continue;
+        found.add(
+          OrphanedExit(
+            viaNodeId: g.originalId[via],
+            toNodeId: g.originalId[g.adjTarget[e]],
+          ),
+        );
+      }
+    }
+
+    // Sorted so a build report reads the same twice, the way the rest of this
+    // package's output does.
+    found.sort((a, b) {
+      final byVia = a.viaNodeId.compareTo(b.viaNodeId);
+      return byVia != 0 ? byVia : a.toNodeId.compareTo(b.toNodeId);
+    });
+    return List.unmodifiable(found);
   }
 
   /// The directed edge `from -> to`, or `-1`.
@@ -376,18 +448,28 @@ class TurnRestrictionSplitStats {
   /// the cost in vertices rather than a count of restrictions.
   final int copies;
 
+  /// Ways left with no permitted entry, because every approach to their
+  /// junction is restricted and none of the restrictions names them.
+  ///
+  /// Unlike every other field here these are *enforced* restrictions, not
+  /// dropped ones — the graph is doing what the source asked. They are reported
+  /// because the source asking for it is nearly always the mistake.
+  final List<OrphanedExit> orphanedExits;
+
   const TurnRestrictionSplitStats({
     this.applied = 0,
     this.unresolved = 0,
     this.contradictory = 0,
     this.inert = 0,
     this.copies = 0,
+    this.orphanedExits = const [],
   });
 
   @override
   String toString() =>
       'TurnRestrictionSplitStats($applied applied in $copies copies, '
-      '$unresolved unresolved, $contradictory contradictory, $inert inert)';
+      '$unresolved unresolved, $contradictory contradictory, $inert inert, '
+      '${orphanedExits.length} orphaned)';
 }
 
 /// One junction copy: the approach that lands on it, and the exits it keeps.
