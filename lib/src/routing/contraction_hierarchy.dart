@@ -561,8 +561,8 @@ class ContractionHierarchyRouter extends GraphRouteFinder {
     // Unpack shortcuts into original routing edges, in path order.
     final origEdges = <int>[
       ...out.edgesTo(entered),
-      for (final eid in fwdOrdered) ...[]..addAll(_unpacked(eid)),
-      for (final eid in bwdCh) ...[]..addAll(_unpacked(eid)),
+      for (final eid in fwdOrdered) ..._unpacked(eid),
+      for (final eid in bwdCh) ..._unpacked(eid),
       ...into.edgesFrom(left),
     ];
 
