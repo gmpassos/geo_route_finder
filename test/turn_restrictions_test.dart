@@ -556,6 +556,120 @@ void main() {
       );
     });
 
+    test('routing honours the ban, and still reaches the junction', () async {
+      // The end of the exercise, through the real entry point.
+      //
+      // 1-2-3 then 3-4. With `only_straight_on` from 2, a route from 1 to 4
+      // may not turn — but a route from 1 *to 3* must still arrive, and that
+      // is the case the split breaks if the alias loop is missing: every path
+      // reaching 3 from this approach lands on the copy, and under `only_*`
+      // the real vertex can be left with no incoming edge at all.
+      final storage = MemoryStorage();
+      await storage.saveGraph('r', crossroads(restriction: 'only', toNode: 5));
+
+      final router = DijkstraRouter(storage: storage, graphId: 'r');
+
+      // To the junction itself: reachable, despite arriving on a copy.
+      final toJunction = await router.findRoute(
+        const GeoCoordinate(lat: -23.500, lon: -46.700),
+        const GeoCoordinate(lat: -23.500, lon: -46.680),
+      );
+      expect(
+        toJunction.found,
+        isTrue,
+        reason: 'a restricted junction must still be a destination',
+      );
+
+      // And the ban holds. Not by making 4 unreachable — it is still legally
+      // reachable by continuing to 5 and turning round at that dead end,
+      // which is a manoeuvre a driver may actually make — but by costing the
+      // detour. Asserting "no route" here would be asserting something false.
+      final free = MemoryStorage();
+      await free.saveGraph('f', crossroads());
+
+      final direct = await DijkstraRouter(storage: free, graphId: 'f')
+          .findRoute(
+            const GeoCoordinate(lat: -23.500, lon: -46.700),
+            const GeoCoordinate(lat: -23.510, lon: -46.680),
+          );
+
+      final restricted = await router.findRoute(
+        const GeoCoordinate(lat: -23.500, lon: -46.700),
+        const GeoCoordinate(lat: -23.510, lon: -46.680),
+      );
+
+      expect(direct.found, isTrue);
+      expect(restricted.found, isTrue);
+      expect(
+        restricted.distanceMeters,
+        greaterThan(direct.distanceMeters),
+        reason: 'the forbidden turn must cost a detour, not nothing',
+      );
+    });
+
+    test('every router agrees on a restricted graph', () async {
+      // Dijkstra, A* and CH must return the same answer, or the restriction is
+      // being honoured by some searches and not others.
+      final storage = MemoryStorage();
+      await storage.saveGraph('r', crossroads(restriction: 'no'));
+
+      const from = GeoCoordinate(lat: -23.500, lon: -46.700);
+      const to = GeoCoordinate(lat: -23.490, lon: -46.680);
+
+      final routers = <String, RouteFinder>{
+        'dijkstra': DijkstraRouter(storage: storage, graphId: 'r'),
+        'astar': AStarRouter(storage: storage, graphId: 'r'),
+        'ch': ContractionHierarchyRouter(storage: storage, graphId: 'r'),
+      };
+
+      final distances = <String, double>{};
+      for (final entry in routers.entries) {
+        final route = await entry.value.findRoute(from, to);
+        expect(route.found, isTrue, reason: entry.key);
+        distances[entry.key] = route.distanceMeters;
+      }
+
+      expect(
+        distances.values.toSet(),
+        hasLength(1),
+        reason: 'routers disagree: $distances',
+      );
+    });
+
+    test('a conditional ban is closed when no clock is given', () async {
+      // The deliberate default: a turn forbidden *sometimes* is treated as
+      // forbidden. Assuming the permissive case would route a rider through a
+      // junction they may be barred from at exactly the hour the restriction
+      // exists for.
+      final storage = MemoryStorage();
+      await storage.saveGraph(
+        'r',
+        crossroads(restriction: 'no', condition: 'no_left_turn @ (Sa,Su)'),
+      );
+
+      final free = MemoryStorage();
+      await free.saveGraph('f', crossroads());
+
+      const from = GeoCoordinate(lat: -23.500, lon: -46.700);
+      const to = GeoCoordinate(lat: -23.510, lon: -46.680);
+
+      final direct = await DijkstraRouter(
+        storage: free,
+        graphId: 'f',
+      ).findRoute(from, to);
+
+      final restricted = await DijkstraRouter(
+        storage: storage,
+        graphId: 'r',
+      ).findRoute(from, to);
+
+      expect(
+        restricted.distanceMeters,
+        greaterThan(direct.distanceMeters),
+        reason: 'a conditional ban with no clock must bite like a fixed one',
+      );
+    });
+
     test('copies stay out of the spatial index', () async {
       // They sit at the junction's exact coordinate. Snapping to one would
       // start a route already committed to an approach it never made.

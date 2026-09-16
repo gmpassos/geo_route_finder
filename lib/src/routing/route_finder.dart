@@ -5,6 +5,7 @@ import 'package:geo_osm_pbf/geo_osm_pbf.dart';
 import '../graph/graph_builder.dart';
 import '../graph/graph_compressor.dart';
 import '../graph/graph_types.dart';
+import '../graph/turn_restriction_splitter.dart';
 import '../model/geo_route.dart';
 import '../osm/vehicle_profile.dart';
 import '../spatial/kd_tree.dart';
@@ -174,13 +175,98 @@ abstract class GraphRouteFinder implements RouteFinder {
       // search run over the full uncompressed vertex set (one vertex per source
       // node, ~10x larger), which dominates the cost of loading a graph from a
       // generic GeoStorage.
-      final built = GraphCompressor().compress(const GraphBuilder().build(geo));
+      //
+      // The split happens here too, in the same order as the compiled path:
+      // build, split, compress. Leaving it out would quietly drop every
+      // restriction the source carried and produce routes that look fine and
+      // are illegal to follow — exactly what this exists to prevent.
+      final built = GraphCompressor().compress(
+        const TurnRestrictionSplitter().split(
+          const GraphBuilder().build(geo),
+          geo.turnRestrictions,
+        ),
+      );
       _graph = built;
       _search = NearestNodeSearch(built, KdTree.build(built));
     }
 
+    _buildAliases();
+
     await prepare();
     _prepared = true;
+  }
+
+  /// For each real junction, the split copies that stand in for it.
+  ///
+  /// Empty for every graph without restrictions, and absent for every vertex
+  /// that is not a split junction — so the cost is paid only where it is owed.
+  Map<int, List<int>> _aliases = const {};
+
+  void _buildAliases() {
+    final g = _graph!;
+    final splitParent = g.splitParent;
+    if (splitParent == null) {
+      _aliases = const {};
+      return;
+    }
+
+    final byParent = <int, List<int>>{};
+    for (var v = 0; v < g.nodeCount; v++) {
+      final parent = splitParent[v];
+      if (parent >= 0) byParent.putIfAbsent(parent, () => []).add(v);
+    }
+    _aliases = byParent;
+  }
+
+  /// Whether edge [e] is closed to this query.
+  ///
+  /// Today this is "every conditional restriction applies", which is the
+  /// deliberate default: with no clock, a turn that is forbidden *sometimes*
+  /// is treated as forbidden. The alternative — assuming the permissive case —
+  /// would route a rider through a junction they may be barred from at exactly
+  /// the hour the restriction exists for, which is the wrong way to be wrong.
+  ///
+  /// A clock parameter will narrow this to the conditions actually in force at
+  /// the time the rider reaches the junction. The signature already takes the
+  /// seconds elapsed so that arrives without touching three relaxation loops
+  /// again.
+  bool isBlocked(int e, double secondsSoFar) {
+    final adjCond = graph.adjCond;
+    return adjCond != null && adjCond[e] != 0;
+  }
+
+  /// Every vertex that *is* [target], as far as a route is concerned.
+  ///
+  /// **Without this, a route whose destination is a restricted junction
+  /// breaks.** Snapping returns the real vertex, but a path arriving through a
+  /// restricted approach lands on that approach's copy instead — and under an
+  /// `only_*` restriction the real vertex can be left with no incoming edge at
+  /// all: somewhere a rider may leave and never reach.
+  ///
+  /// The copies sit at the identical coordinate, so the route that comes back
+  /// is indistinguishable to a caller. Adding zero-cost edges from copy to
+  /// parent would be the tempting fix and is badly wrong — it re-admits every
+  /// forbidden turn by routing through the junction's inside.
+  List<int> _targetsFor(int target) {
+    final aliases = _aliases[target];
+    return aliases == null ? [target] : [target, ...aliases];
+  }
+
+  /// The cheapest path to [target] or any vertex standing in for it.
+  RawPath _searchToAny(int source, int target) {
+    final targets = _targetsFor(target);
+    if (targets.length == 1) return search(source, targets.single);
+
+    RawPath? best;
+    for (final t in targets) {
+      if (t == source) continue;
+      final path = search(source, t);
+      if (!path.found) continue;
+      if (best == null || path.distanceMeters < best.distanceMeters) {
+        best = path;
+      }
+    }
+    return best ?? RawPath.none;
   }
 
   /// Hook for subclasses to run per-graph preprocessing after the graph is
@@ -229,8 +315,8 @@ abstract class GraphRouteFinder implements RouteFinder {
     // shortcuts cannot be re-weighted). Otherwise use the router's own search().
     final basePenalty = avoidTolls ? _tollPenalty() : null;
     final best = basePenalty != null
-        ? _penalizedSearch(s.node, t.node, basePenalty)
-        : search(s.node, t.node);
+        ? _penalizedSearchToAny(s.node, t.node, basePenalty)
+        : _searchToAny(s.node, t.node);
     if (!best.found) return const [];
 
     if (maxRoutes <= 1) return [buildRoute(best)];
@@ -306,7 +392,7 @@ abstract class GraphRouteFinder implements RouteFinder {
     var attempts = 0;
     while (accepted.length < maxRoutes && attempts < maxAttempts) {
       attempts++;
-      final cand = _penalizedSearch(source, target, penalty);
+      final cand = _penalizedSearchToAny(source, target, penalty);
       if (!cand.found) break;
       if (cand.distanceMeters > maxDist) break;
 
@@ -341,6 +427,29 @@ abstract class GraphRouteFinder implements RouteFinder {
   /// and time of the discovered path. Runs on the original routing graph, so it
   /// works uniformly for every router (it is the alternatives fallback for the
   /// Contraction-Hierarchies router, whose shortcuts cannot be re-penalized).
+  /// [_penalizedSearch] over every vertex standing in for [target].
+  ///
+  /// The alias loop belongs on this path too. `avoidTolls` bypasses `search`
+  /// entirely, and so does every alternative route — so patching only the
+  /// plain path would leave both unable to reach a restricted junction.
+  RawPath _penalizedSearchToAny(int source, int target, Float64List penalty) {
+    final targets = _targetsFor(target);
+    if (targets.length == 1) {
+      return _penalizedSearch(source, targets.single, penalty);
+    }
+
+    RawPath? best;
+    for (final t in targets) {
+      if (t == source) continue;
+      final path = _penalizedSearch(source, t, penalty);
+      if (!path.found) continue;
+      if (best == null || path.distanceMeters < best.distanceMeters) {
+        best = path;
+      }
+    }
+    return best ?? RawPath.none;
+  }
+
   RawPath _penalizedSearch(int source, int target, Float64List penalty) {
     final g = graph;
     final n = g.nodeCount;
@@ -348,8 +457,17 @@ abstract class GraphRouteFinder implements RouteFinder {
     final parentEdge = Int32List(n)..fillRange(0, n, -1);
     final parentNode = Int32List(n)..fillRange(0, n, -1);
 
+    // Real seconds, tracked alongside the penalized cost.
+    //
+    // `dist` here is *penalized*, not time — a toll edge is weighted by a
+    // factor large enough to steer around it — so feeding it to a clock would
+    // be wrong by orders of magnitude. Kept separate so the condition check is
+    // asked about the time the rider actually arrives.
+    final realTime = Float64List(n)..fillRange(0, n, double.infinity);
+
     final heap = MinHeap();
     dist[source] = 0;
+    realTime[source] = 0;
     heap.push(0, source);
 
     while (heap.isNotEmpty) {
@@ -360,10 +478,12 @@ abstract class GraphRouteFinder implements RouteFinder {
       for (var e = g.adjOffset[u]; e < g.adjOffset[u + 1]; e++) {
         final w = g.adjTime[e];
         if (w == double.infinity) continue;
+        if (isBlocked(e, realTime[u])) continue;
         final v = g.adjTarget[e];
         final nd = d + w * penalty[e];
         if (nd < dist[v]) {
           dist[v] = nd;
+          realTime[v] = realTime[u] + w;
           parentEdge[v] = e;
           parentNode[v] = u;
           heap.push(nd, v);

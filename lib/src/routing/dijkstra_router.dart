@@ -39,6 +39,9 @@ class DijkstraRouter extends GraphRouteFinder {
       for (var e = g.adjOffset[u]; e < g.adjOffset[u + 1]; e++) {
         final w = g.adjTime[e];
         if (w == double.infinity) continue;
+        // `d` is real seconds on this path — no penalty is applied — so it is
+        // the time the rider reaches this junction.
+        if (isBlocked(e, d)) continue;
         final v = g.adjTarget[e];
         final nd = d + w;
         if (nd < dist[v]) {
