@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:typed_data';
 
 import '../graph/graph_types.dart';
@@ -30,7 +31,7 @@ class GraphDeserializer {
   /// Decodes a `.graph` payload into a [RoutingGraph].
   RoutingGraph deserializeGraph(Uint8List input) {
     final bytes = _aligned(input);
-    if (bytes.length < 24) {
+    if (bytes.length < 32) {
       throw const GraphFormatException('graph payload too small');
     }
     if (bytes[0] != 0x47 ||
@@ -53,9 +54,11 @@ class GraphDeserializer {
     final n = bd.getInt32(12, Endian.little);
     final m = bd.getInt32(16, Endian.little);
     final gp = bd.getInt32(20, Endian.little);
+    final flags = bd.getInt32(24, Endian.little);
+    final condBytes = bd.getInt32(28, Endian.little);
 
     final base = bytes.offsetInBytes;
-    var off = base + 24;
+    var off = base + 32;
     Float64List takeF64(int len) {
       final v = bytes.buffer.asFloat64List(off, len);
       off += len * 8;
@@ -89,8 +92,22 @@ class GraphDeserializer {
     final adjOffset = takeI32(n + 1);
     final adjTarget = takeI32(m);
     final geomOffset = takeI32(m + 1);
+    final splitParent = (flags & kGraphFlagHasSplitParent) != 0
+        ? takeI32(n)
+        : null;
     final adjToll = takeU8(m);
     final adjSignal = takeU8(m);
+
+    Uint8List? adjCond;
+    var conditions = const <String>[];
+    if ((flags & kGraphFlagHasConditions) != 0) {
+      adjCond = takeU8(m);
+      final blob = takeU8(condBytes);
+      // An empty blob is a graph with flagged edges and no expressions, which
+      // is a file that contradicts itself — `split` on an empty string would
+      // hand back `['']` and every index would point at nothing.
+      conditions = condBytes == 0 ? const [] : utf8.decode(blob).split('\n');
+    }
 
     return RoutingGraph(
       lat: lat,
@@ -104,6 +121,9 @@ class GraphDeserializer {
       adjSignal: adjSignal,
       geomCoords: geomCoords,
       geomOffset: geomOffset,
+      splitParent: splitParent,
+      adjCond: adjCond,
+      conditions: conditions,
     );
   }
 

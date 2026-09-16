@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:typed_data';
 
 import '../graph/graph_types.dart';
@@ -11,12 +12,32 @@ import '../spatial/kd_tree.dart';
 /// v3 added `adjSignal` beside it, on the same terms and for the same reason:
 /// a count of signalised junctions entered per edge.
 ///
-/// **Every stored graph has to be rebuilt**, and deliberately so. A v2 graph's
-/// `adjTime` was computed without signal delay, so reading one as a v3 would
-/// give routes whose cost silently disagrees with every route planned since —
-/// a difference no field in the file would reveal. Refusing it is the only
-/// honest option.
-const int kGraphFormatVersion = 3;
+/// v4 added turn restrictions, which arrive in two shapes. An unconditional
+/// one is *topology* — the junction is split so the forbidden movement has no
+/// edge — needing no new array beyond `splitParent` to say which vertices are
+/// copies. A conditional one cannot be topology, because one graph has to
+/// answer both "restricted now" and "not restricted now", so the edge stays
+/// and `adjCond` indexes the expression forbidding it. The header grew from 24
+/// bytes to 32 to carry the condition blob's size — still a multiple of 8, so
+/// the f64 block behind it stays aligned.
+///
+/// **Every stored graph has to be rebuilt** on each of these, deliberately. A
+/// v2 graph's `adjTime` was computed without signal delay, so reading one as a
+/// v3 would give routes whose cost silently disagrees with every route planned
+/// since — a difference no field in the file would reveal. A v3 read as a v4
+/// is worse still: it has no split junctions, so every turn restriction in the
+/// city silently fails to apply and the routes look entirely reasonable while
+/// being illegal to follow. Refusing is the only honest option.
+const int kGraphFormatVersion = 4;
+
+/// Header flag: the payload carries `splitParent`.
+///
+/// Public because it is part of the on-disk contract, and because the
+/// deserializer is a separate library that has to read the same bit.
+const int kGraphFlagHasSplitParent = 1 << 0;
+
+/// Header flag: the payload carries `adjCond` and a condition blob.
+const int kGraphFlagHasConditions = 1 << 1;
 
 /// `'GRF1'` magic for the `.graph` payload.
 const int _graphMagic0 = 0x47; // G
@@ -50,10 +71,29 @@ class GraphSerializer {
     final m = g.edgeCount;
     final gp = g.geomCoords.length ~/ 2;
 
-    const header = 24;
+    final splitParent = g.splitParent;
+    final adjCond = g.adjCond;
+
+    // UTF-8, newline-separated, and inside the payload rather than beside it
+    // so the existing CRC covers the expressions too.
+    final conditionBlob = adjCond == null
+        ? Uint8List(0)
+        : Uint8List.fromList(utf8.encode(g.conditions.join('\n')));
+
+    var flags = 0;
+    if (splitParent != null) flags |= kGraphFlagHasSplitParent;
+    if (adjCond != null) flags |= kGraphFlagHasConditions;
+
+    // 32, not 24. An extra `int32` would have made it 28 and left every f64
+    // behind it on a 4-byte boundary, where `asFloat64List` throws rather than
+    // misreads — so the header grows by a whole 8.
+    const header = 32;
     final f64Bytes = 8 * (3 * n + 2 * m + 2 * gp);
-    final i32Bytes = 4 * ((n + 1) + m + (m + 1));
-    final u8Bytes = 2 * m; // adjToll and adjSignal, one byte each per edge
+    final i32Bytes =
+        4 * ((n + 1) + m + (m + 1) + (splitParent == null ? 0 : n));
+    // adjToll and adjSignal, plus adjCond when present, one byte each per
+    // edge; then the condition text.
+    final u8Bytes = (adjCond == null ? 2 : 3) * m + conditionBlob.length;
     final total = header + f64Bytes + i32Bytes + u8Bytes;
 
     final out = Uint8List(total);
@@ -67,6 +107,8 @@ class GraphSerializer {
     bd.setInt32(12, n, Endian.little);
     bd.setInt32(16, m, Endian.little);
     bd.setInt32(20, gp, Endian.little);
+    bd.setInt32(24, flags, Endian.little);
+    bd.setInt32(28, conditionBlob.length, Endian.little);
 
     var off = header;
     void putF64(Float64List src) {
@@ -93,11 +135,18 @@ class GraphSerializer {
     putI32(g.adjOffset);
     putI32(g.adjTarget);
     putI32(g.geomOffset);
+    if (splitParent != null) putI32(splitParent);
     // 1-byte arrays last so the 8- and 4-byte arrays above stay aligned.
     out.setRange(off, off + g.adjToll.length, g.adjToll);
     off += g.adjToll.length;
     out.setRange(off, off + g.adjSignal.length, g.adjSignal);
     off += g.adjSignal.length;
+    if (adjCond != null) {
+      out.setRange(off, off + adjCond.length, adjCond);
+      off += adjCond.length;
+      out.setRange(off, off + conditionBlob.length, conditionBlob);
+      off += conditionBlob.length;
+    }
 
     return out;
   }

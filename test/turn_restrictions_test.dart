@@ -483,6 +483,79 @@ void main() {
       expect(g.adjCond, isNull);
     });
 
+    test('round-trips through the v4 format', () async {
+      final g = split(
+        crossroads(restriction: 'no', condition: 'no_left_turn @ (Sa,Su)'),
+      );
+
+      final bytes = const GraphSerializer().serializeGraph(g);
+      final back = const GraphDeserializer().deserializeGraph(bytes);
+
+      expect(back.nodeCount, equals(g.nodeCount));
+      expect(back.splitParent, equals(g.splitParent));
+      expect(back.adjCond, equals(g.adjCond));
+      expect(back.conditions, equals(g.conditions));
+
+      // And the meaning survives, not just the bytes.
+      final arrival = arrivalOf(back, 2, 3);
+      expect(back.isSplitCopy(arrival), isTrue);
+
+      final toFour = [
+        for (
+          var e = back.adjOffset[arrival];
+          e < back.adjOffset[arrival + 1];
+          e++
+        )
+          if (back.originalId[back.adjTarget[e]] == 4) e,
+      ].single;
+
+      expect(back.conditionOf(toFour), equals('no_left_turn @ (Sa,Su)'));
+    });
+
+    test('a graph with no restrictions writes no new arrays', () async {
+      // The common case has to stay exactly as cheap as it was.
+      final g = const GraphBuilder().build(crossroads());
+      final back = const GraphDeserializer().deserializeGraph(
+        const GraphSerializer().serializeGraph(g),
+      );
+
+      expect(back.splitParent, isNull);
+      expect(back.adjCond, isNull);
+      expect(back.conditions, isEmpty);
+    });
+
+    test('the header stays a multiple of eight', () async {
+      // The reason it went 24 -> 32 rather than 24 -> 28: `asFloat64List`
+      // throws on a misaligned offset, so a header that is not a multiple of
+      // 8 makes every f64 array behind it unreadable rather than merely
+      // slower.
+      final g = const GraphBuilder().build(crossroads());
+      final bytes = const GraphSerializer().serializeGraph(g);
+
+      // lat[0] is the first f64, immediately after the header.
+      final header = 32;
+      expect(header % 8, isZero);
+      expect(
+        ByteData.view(bytes.buffer).getFloat64(header, Endian.host),
+        closeTo(-23.5, 0.01),
+      );
+    });
+
+    test('a v3 graph is refused rather than read as unrestricted', () async {
+      // The dangerous direction. A v3 graph has no split junctions, so read
+      // as a v4 every restriction in the city silently would not apply — and
+      // the routes would look entirely reasonable while being illegal.
+      final bytes = const GraphSerializer().serializeGraph(
+        const GraphBuilder().build(crossroads()),
+      );
+      ByteData.view(bytes.buffer).setInt32(4, 3, Endian.little);
+
+      expect(
+        () => const GraphDeserializer().deserializeGraph(bytes),
+        throwsA(isA<GraphFormatException>()),
+      );
+    });
+
     test('copies stay out of the spatial index', () async {
       // They sit at the junction's exact coordinate. Snapping to one would
       // start a route already committed to an approach it never made.
