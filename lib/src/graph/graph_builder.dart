@@ -120,6 +120,7 @@ class GraphBuilder {
     final time = Float64List(m);
     final toll = Uint8List(m);
     final signal = Uint8List(m);
+    final access = Uint8List(m);
     final edgeRef = Int32List(m);
     final reversed = Uint8List(m);
 
@@ -151,6 +152,9 @@ class GraphBuilder {
       time[k] = e.travelTimeSeconds + forwardSignal * signalDelaySeconds;
       toll[k] = tollCount;
       signal[k] = forwardSignal;
+      // A property of the way, so both directions carry it. A driveway is a
+      // driveway whichever end you enter it from.
+      access[k] = e.accessOnly ? 1 : 0;
       edgeRef[k] = ei;
       reversed[k] = 0;
       k++;
@@ -161,6 +165,7 @@ class GraphBuilder {
         time[k] = e.travelTimeSeconds + backwardSignal * signalDelaySeconds;
         toll[k] = tollCount;
         signal[k] = backwardSignal;
+        access[k] = e.accessOnly ? 1 : 0;
         edgeRef[k] = ei;
         reversed[k] = 1;
         k++;
@@ -218,6 +223,7 @@ class GraphBuilder {
     final adjDist = Float64List(m);
     final adjToll = Uint8List(m);
     final adjSignal = Uint8List(m);
+    final adjAccess = Uint8List(m);
     final geomOffset = Int32List(m + 1);
     final geomCoords = Float64List(totalPoints * 2);
 
@@ -230,6 +236,7 @@ class GraphBuilder {
       adjDist[i] = dist[d];
       adjToll[i] = toll[d];
       adjSignal[i] = signal[d];
+      adjAccess[i] = access[d];
       geomOffset[i] = point;
 
       final shape = inEdges[edgeRef[d]].shapePoints;
@@ -267,6 +274,7 @@ class GraphBuilder {
       adjDist: adjDist,
       adjToll: adjToll,
       adjSignal: adjSignal,
+      adjAccess: adjAccess,
       geomCoords: geomCoords,
       geomOffset: geomOffset,
     );

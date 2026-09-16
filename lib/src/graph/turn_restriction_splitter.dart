@@ -274,6 +274,7 @@ class TurnRestrictionSplitter {
     final adjDist = <double>[];
     final adjToll = <int>[];
     final adjSignal = <int>[];
+    final adjAccess = <int>[];
     final adjCond = <int>[];
     final geom = <double>[];
     final geomOffset = <int>[0];
@@ -284,6 +285,7 @@ class TurnRestrictionSplitter {
       adjDist.add(g.adjDist[e]);
       adjToll.add(g.adjToll[e]);
       adjSignal.add(g.adjSignal[e]);
+      adjAccess.add(g.adjAccess[e]);
       adjCond.add(conditionIndex(condition ?? g.conditionOf(e)));
 
       for (var p = g.geomOffset[e]; p < g.geomOffset[e + 1]; p++) {
@@ -333,6 +335,7 @@ class TurnRestrictionSplitter {
       adjDist: Float64List.fromList(adjDist),
       adjToll: Uint8List.fromList(adjToll),
       adjSignal: Uint8List.fromList(adjSignal),
+      adjAccess: Uint8List.fromList(adjAccess),
       geomCoords: Float64List.fromList(geom),
       geomOffset: Int32List.fromList(geomOffset),
       splitParent: splitParent,

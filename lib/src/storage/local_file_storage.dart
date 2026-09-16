@@ -188,6 +188,7 @@ class LocalFileStorage implements CompiledGraphStorage {
             speedKmh: speed,
             oneWay: true,
             tolls: g.adjToll[e],
+            accessOnly: g.isAccessOnly(e),
           ),
         );
       }

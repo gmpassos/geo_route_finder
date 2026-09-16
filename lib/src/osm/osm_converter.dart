@@ -190,6 +190,8 @@ class OsmConverter {
       final speed = _speedFor(way);
       final dir = _onewayOf(way);
       final tolls = _tollOf(way) ? 1 : 0;
+      final accessOnly =
+          WayAccessRules.of(way.tags, profile) == WayAccess.accessOnly;
       final ids = way.nodeIds;
       for (var i = 0; i + 1 < ids.length; i++) {
         final a = coords[ids[i]];
@@ -206,6 +208,7 @@ class OsmConverter {
               speedKmh: speed,
               oneWay: true,
               tolls: tolls,
+              accessOnly: accessOnly,
             ),
           );
         } else {
@@ -217,6 +220,7 @@ class OsmConverter {
               speedKmh: speed,
               oneWay: dir == _OneWay.forward,
               tolls: tolls,
+              accessOnly: accessOnly,
             ),
           );
         }
