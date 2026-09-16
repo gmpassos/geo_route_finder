@@ -110,7 +110,23 @@ class ContractionHierarchyRouter extends GraphRouteFinder {
     _rank = Int32List(n)..fillRange(0, n, -1);
     _deletedNeighbours = Int32List(n);
 
+    final adjCond = g.adjCond;
+
     for (var e = 0; e < g.edgeCount; e++) {
+      // A conditionally restricted edge is kept out of the hierarchy entirely.
+      //
+      // With no clock every condition applies, so the edge is closed to every
+      // query this hierarchy will answer — which makes omitting it exact, and
+      // free at query time. Checking it *during* the search instead would be
+      // unsound: contraction builds shortcuts that span vertices, so an edge
+      // the check would reject can end up hidden inside a shortcut where no
+      // query-time check can see it.
+      //
+      // When a clock arrives, the honest move is to fall back to
+      // `_penalizedSearch` for a clocked query, exactly as `avoidTolls`
+      // already does — the backward search has no clock to evaluate against.
+      if (adjCond != null && adjCond[e] != 0) continue;
+
       final id = _edges.length;
       final from = _sourceOfEdge(e);
       final to = g.adjTarget[e];
@@ -301,7 +317,21 @@ class ContractionHierarchyRouter extends GraphRouteFinder {
   }
 
   @override
-  RawPath search(int source, int target) {
+  RawPath search(int source, int target, {DateTime? at}) {
+    // A clocked query cannot use the hierarchy.
+    //
+    // It was built with conditional edges removed, which is exactly right for
+    // the unclocked case — with no clock every condition applies, so those
+    // edges are closed to every query the hierarchy will answer. But it leaves
+    // no way to *re-admit* an edge a clock says is open: the edge is not in
+    // the hierarchy to be found, and the backward search has no clock to
+    // evaluate one against even if it were.
+    //
+    // So a clocked query runs over the graph itself. `avoidTolls` already
+    // takes the same way out, for the same underlying reason: baked shortcuts
+    // cannot be re-weighted after the fact.
+    if (at != null) return searchOverGraph(source, target, at);
+
     final n = graph.nodeCount;
     final distF = Float64List(n)..fillRange(0, n, double.infinity);
     final distB = Float64List(n)..fillRange(0, n, double.infinity);

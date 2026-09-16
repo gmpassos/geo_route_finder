@@ -47,17 +47,20 @@ export 'src/version.dart';
 export 'src/model/geo_edge.dart';
 export 'src/model/geo_graph.dart';
 export 'src/model/geo_route.dart';
+export 'src/model/geo_turn_restriction.dart';
 
 // Data source extension point and the OSM adapter.
 export 'src/datasource/geo_data_source.dart';
 export 'src/osm/osm_converter.dart';
 export 'src/osm/osm_data_source.dart';
+export 'src/osm/conditional_restriction.dart';
 export 'src/osm/vehicle_profile.dart';
 
 // Graph compilation and optimization.
 export 'src/graph/graph_types.dart';
 export 'src/graph/graph_builder.dart';
 export 'src/graph/graph_compressor.dart';
+export 'src/graph/turn_restriction_splitter.dart';
 
 // Spatial index.
 export 'src/spatial/kd_tree.dart';

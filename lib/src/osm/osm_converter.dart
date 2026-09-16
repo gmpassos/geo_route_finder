@@ -2,8 +2,10 @@ import 'package:geo_osm_pbf/geo_osm_pbf.dart';
 
 import '../graph/graph_builder.dart';
 import '../graph/graph_compressor.dart';
+import '../graph/turn_restriction_splitter.dart';
 import '../model/geo_edge.dart';
 import '../model/geo_graph.dart';
+import '../model/geo_turn_restriction.dart';
 import '../serialization/graph_serializer.dart';
 import '../spatial/kd_tree.dart';
 import '../storage/compiled_graph.dart';
@@ -56,6 +58,18 @@ class OsmConverter {
   /// build time — paid once per graph, never at query time.
   final bool readSignals;
 
+  /// Whether to read turn restrictions, so a route is one a rider may legally
+  /// follow.
+  ///
+  /// A left turn the sign forbids is not a longer route, it is a wrong one —
+  /// and the rider finds out while sitting at the junction.
+  ///
+  /// The cost of `true` is decoding relations during the pass that already
+  /// reads ways. Relations are a fraction of a percent of an extract's
+  /// entities, so this is far cheaper than [readSignals]; it is a flag at all
+  /// because a caller with no use for restrictions should not pay for them.
+  final bool readTurnRestrictions;
+
   OsmConverter({
     this.parser = const OsmPbfParser(),
     this.builder = const GraphBuilder(),
@@ -63,7 +77,16 @@ class OsmConverter {
     this.profile = VehicleProfile.car,
     this.compress = true,
     this.readSignals = true,
+    this.readTurnRestrictions = true,
   }) : compressor = compressor ?? GraphCompressor();
+
+  /// Why restrictions were dropped on the most recent [toGeoGraph], or null.
+  ///
+  /// Mirrors `GraphCompressor.lastStats`. Exposed because the skipped counts
+  /// are the honest measure of how complete the answer is: a build reporting
+  /// only what it accepted cannot be judged.
+  TurnRestrictionStats? get lastRestrictionStats => _lastRestrictionStats;
+  TurnRestrictionStats? _lastRestrictionStats;
 
   /// Whether a node's tags describe a junction that stops traffic.
   ///
@@ -103,16 +126,34 @@ class OsmConverter {
   /// Parses [inputFile] and returns the normalized (uncompiled) [GeoGraph].
   Future<GeoGraph> toGeoGraph(String inputFile) async {
     // Pass 1: ways. Keep routable ways and collect referenced node ids.
+    //
+    // Relations ride along on this pass rather than getting one of their own.
+    // They are a fraction of a percent of an extract's entities, so collecting
+    // every candidate unfiltered costs almost nothing — and filtering here
+    // would be wrong anyway, because whether a restriction can be resolved
+    // depends on ways this pass has not finished seeing.
     final keptWays = <GeoWay>[];
     final neededNodes = <int>{};
+    final restrictionRelations = <GeoRelation>[];
+
     await parser.parse(
       inputFile,
       readNodes: false,
+      readRelations: readTurnRestrictions,
       onWay: (way) {
         if (!_isRoutable(way)) return;
         keptWays.add(way);
         neededNodes.addAll(way.nodeIds);
       },
+      onRelation: !readTurnRestrictions
+          ? null
+          : (relation) {
+              // `startsWith` rather than equality: `type=restriction:bus` and
+              // friends are the same shape with a mode attached.
+              if (relation.type?.startsWith('restriction') ?? false) {
+                restrictionRelations.add(relation);
+              }
+            },
     );
 
     // Pass 2: nodes. Keep only coordinates referenced by a kept way, and note
@@ -183,6 +224,12 @@ class OsmConverter {
 
     final nodes = coords.values.toList();
 
+    final restrictions = _resolveRestrictions(
+      restrictionRelations,
+      keptWays,
+      coords,
+    );
+
     return GeoGraph(
       nodes: nodes,
       edges: edges,
@@ -190,13 +237,312 @@ class OsmConverter {
       // coordinates the extract does not contain is not a junction this graph
       // can route through.
       signalNodeIds: signalNodes.where(coords.containsKey).toSet(),
+      turnRestrictions: restrictions,
     );
+  }
+
+  /// Turns `type=restriction` relations into from/via/to node triples.
+  ///
+  /// The relation names *ways*; routing needs the single segment on each side
+  /// of the junction. That resolution is done here, against the ways this
+  /// profile kept, because this is the only point where both the relation and
+  /// the way geometry are in hand.
+  ///
+  /// Every rejection is counted rather than dropped quietly — see
+  /// [TurnRestrictionStats]. A restriction the router does not honour is a
+  /// route it may propose illegally, so the number that is *not* handled is
+  /// the one worth reporting.
+  List<GeoTurnRestriction> _resolveRestrictions(
+    List<GeoRelation> relations,
+    List<GeoWay> keptWays,
+    Map<int, GeoNode> coords,
+  ) {
+    final waysById = {for (final w in keptWays) w.id: w};
+
+    final out = <GeoTurnRestriction>[];
+    final conditions = <String>{};
+
+    var skippedViaWay = 0;
+    var unresolvedMember = 0;
+    var ambiguousMember = 0;
+    var excepted = 0;
+
+    for (final relation in relations) {
+      final tags = relation.tags;
+
+      // `except=psv;bicycle` lists the modes the sign does not apply to.
+      // Honouring it matters: without it a bus lane's restrictions are applied
+      // to bicycles, which systematically over-restricts the very profiles
+      // that have the fewest alternatives.
+      final except = tags['except'];
+      if (except != null && _exceptedByProfile(except)) {
+        excepted++;
+        continue;
+      }
+
+      // A relation carrying *both* tags describes two different signs, and
+      // merging them downgrades the permanent one.
+      //
+      // Taking `kind` from `restriction` and `condition` from
+      // `restriction:conditional` produced one record whose ban comes from the
+      // always-on sign and whose *timetable* comes from the timed one — so
+      // outside the window the permanent restriction stopped applying and the
+      // forbidden turn was offered. The pair needs two records, not one.
+      final unconditional = tags['restriction'];
+      final conditional = tags['restriction:conditional'];
+
+      if (unconditional == null && conditional == null) {
+        unresolvedMember++;
+        continue;
+      }
+
+      // Each value is judged on its own, so a relation whose permanent tag is
+      // unreadable still contributes its timed one, and the other way round.
+      final unconditionalKind = unconditional == null
+          ? null
+          : _banKind(unconditional);
+      final conditionalKind = conditional == null
+          ? null
+          : _banKind(conditional);
+
+      if (unconditionalKind == null && conditionalKind == null) {
+        unresolvedMember++;
+        continue;
+      }
+
+      final via = relation.members
+          .where((m) => m.role == 'via')
+          .toList(growable: false);
+
+      if (via.any((m) => m.type == GeoMemberType.way)) {
+        skippedViaWay++;
+        continue;
+      }
+
+      if (via.length != 1 || via.single.type != GeoMemberType.node) {
+        unresolvedMember++;
+        continue;
+      }
+
+      final viaNodeId = via.single.ref;
+      if (!coords.containsKey(viaNodeId)) {
+        unresolvedMember++;
+        continue;
+      }
+
+      final from = _neighbourAcross(relation, 'from', viaNodeId, waysById);
+      final to = _neighbourAcross(relation, 'to', viaNodeId, waysById);
+
+      if (from == _memberUnresolved || to == _memberUnresolved) {
+        unresolvedMember++;
+        continue;
+      }
+      if (from == _memberAmbiguous || to == _memberAmbiguous) {
+        ambiguousMember++;
+        continue;
+      }
+
+      // One record per sign. A relation carrying both tags is two signs at one
+      // junction — an always-on ban and a timed one — and emitting a single
+      // record would make the permanent one expire with the timetable.
+      if (unconditionalKind != null) {
+        out.add(
+          GeoTurnRestriction(
+            fromNodeId: from,
+            viaNodeId: viaNodeId,
+            toNodeId: to,
+            isOnly: unconditionalKind,
+          ),
+        );
+      }
+
+      if (conditional != null && conditionalKind != null) {
+        conditions.add(conditional);
+        out.add(
+          GeoTurnRestriction(
+            fromNodeId: from,
+            viaNodeId: viaNodeId,
+            toNodeId: to,
+            // Read from its own tag rather than inherited: the two signs need
+            // not agree about which movement they forbid.
+            isOnly: conditionalKind,
+            condition: conditional,
+          ),
+        );
+      }
+    }
+
+    _lastRestrictionStats = TurnRestrictionStats(
+      accepted: out.length,
+      skippedViaWay: skippedViaWay,
+      unresolvedMember: unresolvedMember,
+      ambiguousMember: ambiguousMember,
+      excepted: excepted,
+      conditions: conditions.length,
+    );
+
+    return out;
+  }
+
+  /// The movements an OSM turn restriction can name.
+  ///
+  /// A closed set on purpose. The prefix alone is not enough to tell a turn
+  /// restriction from something else that happens to start the same way:
+  /// `no parking` on a `type=restriction` relation begins with `no`, and
+  /// reading it as a ban removes a movement the sign never mentioned. The
+  /// prefix says *which direction* a value points; the movement is what says
+  /// it is about turning at all.
+  static const _restrictionMovements = {
+    'left_turn',
+    'right_turn',
+    'straight_on',
+    'u_turn',
+    'entry',
+    'exit',
+  };
+
+  /// Whether a `restriction` value is an `only_*` ban, or null when the value
+  /// is not one this converter can read.
+  ///
+  /// Null is not "no restriction" — it is *counted* as unresolved, so a value
+  /// nobody anticipated shows up in the build report rather than being guessed
+  /// at in either direction. `no_*` and `only_*` mean opposite things, and a
+  /// wrong guess forbids precisely what the sign permits.
+  ///
+  /// Lenient about separators and case, because this is hand-edited data and
+  /// `No Left Turn` is the same sign as `no_left_turn`; strict about the
+  /// vocabulary, because that is what distinguishes a turn restriction from a
+  /// mis-tagged relation. The movement itself is then discarded: which turn is
+  /// forbidden comes from the relation's `from`/`via`/`to` members, which is
+  /// the only place it is stated unambiguously.
+  static bool? _banKind(String value) {
+    // A conditional value carries its timetable after an `@`, and a value can
+    // list several bans with `;`. Both are stripped down to the movements.
+    final head = value.split('@').first;
+
+    bool? kind;
+    for (final part in head.split(';')) {
+      final normalized = part.trim().toLowerCase().replaceAll(
+        RegExp(r'[\s\-]+'),
+        '_',
+      );
+
+      for (final entry in const {'no_': false, 'only_': true}.entries) {
+        if (!normalized.startsWith(entry.key)) continue;
+        if (!_restrictionMovements.contains(
+          normalized.substring(entry.key.length),
+        )) {
+          continue;
+        }
+
+        // A value that bans one movement and mandates another cannot be the
+        // single record this returns, and choosing either half would state
+        // something the source did not.
+        if (kind != null && kind != entry.value) return null;
+        kind = entry.value;
+      }
+    }
+    return kind;
+  }
+
+  /// Sentinel: the member names a way this graph does not carry.
+  static const _memberUnresolved = -1;
+
+  /// Sentinel: the way passes *through* the via node, so which of its two
+  /// neighbours the restriction means is not decidable from the relation.
+  static const _memberAmbiguous = -2;
+
+  /// The node id one step along [role]'s way from [viaNodeId].
+  ///
+  /// A `from` way should end at the via node and a `to` way should start
+  /// there, which makes the neighbouring node unambiguous. Real data mostly
+  /// complies; where it does not — the way runs straight through the junction
+  /// — both neighbours are candidates and the relation does not say which.
+  ///
+  /// Guessing there is worse than skipping. For a `no_*` restriction, banning
+  /// both branches forbids a movement that is legal; for an `only_*`, allowing
+  /// both permits one that is not. Either way the graph would state something
+  /// the source never said.
+  int _neighbourAcross(
+    GeoRelation relation,
+    String role,
+    int viaNodeId,
+    Map<int, GeoWay> waysById,
+  ) {
+    final members = relation.members.where(
+      (m) => m.role == role && m.type == GeoMemberType.way,
+    );
+
+    for (final member in members) {
+      final way = waysById[member.ref];
+      if (way == null) continue;
+
+      final ids = way.nodeIds;
+      final at = ids.indexOf(viaNodeId);
+      if (at < 0) continue;
+
+      // Appears more than once: a loop through the junction, same problem.
+      if (ids.indexOf(viaNodeId, at + 1) >= 0) return _memberAmbiguous;
+
+      final first = at == 0;
+      final last = at == ids.length - 1;
+
+      if (last && !first) return ids[at - 1];
+      if (first && !last) return ids[at + 1];
+
+      // Interior: two candidates and nothing to choose between them.
+      if (!first && !last) return _memberAmbiguous;
+
+      // A way of one node, which is not geometry.
+      return _memberUnresolved;
+    }
+
+    return _memberUnresolved;
+  }
+
+  /// Whether `except=` exempts this profile from a restriction.
+  bool _exceptedByProfile(String except) {
+    final listed = except
+        .split(';')
+        .map((s) => s.trim().toLowerCase())
+        .where((s) => s.isNotEmpty);
+
+    return listed.any(profile.restrictionExceptions.contains);
   }
 
   /// Compiles [inputFile] into a [CompiledGraph] (CSR + KD-tree + metadata).
   Future<CompiledGraph> compile(String inputFile) async {
     final geo = await toGeoGraph(inputFile);
     var routing = builder.build(geo);
+
+    // Between the builder and the compressor, and it has to be both. The
+    // builder resolves from/to to dense edge indices, which is the only
+    // unambiguous way to name an approach; the compressor then merges that
+    // approach into a chain and destroys its identity.
+    routing = const TurnRestrictionSplitter().split(
+      routing,
+      geo.turnRestrictions,
+    );
+
+    // Folded back into the reading stats, because a restriction dropped *here*
+    // is as unenforced as one the reader refused — and `contradictory` is only
+    // detectable at this stage, which is why it read zero on every build
+    // before this.
+    final split = TurnRestrictionSplitter.lastStats;
+    final read = _lastRestrictionStats;
+    if (split != null && read != null) {
+      _lastRestrictionStats = TurnRestrictionStats(
+        accepted: split.applied,
+        skippedViaWay: read.skippedViaWay,
+        unresolvedMember:
+            read.unresolvedMember + split.unresolved + split.inert,
+        ambiguousMember: read.ambiguousMember,
+        contradictory: split.contradictory,
+        excepted: read.excepted,
+        conditions: read.conditions,
+      );
+    }
+
     if (compress) routing = compressor.compress(routing);
     final tree = KdTree.build(routing);
     final meta = GraphMeta(

@@ -84,6 +84,20 @@ void main() {
         throwsA(isA<GraphFormatException>()),
       );
     });
+
+    test('rejects an index written for another format version', () {
+      // The `.index` carries its own version, and it has to be checked
+      // separately: the pair is written together but they are two files, and
+      // a stale one left beside a rebuilt graph is a permutation of vertices
+      // that no longer exist.
+      final bytes = const GraphSerializer().serializeIndex(KdTree.build(graph));
+      ByteData.view(bytes.buffer).setInt32(4, 3, Endian.little);
+
+      expect(
+        () => const GraphDeserializer().deserializeIndex(bytes, graph),
+        throwsA(isA<GraphFormatException>()),
+      );
+    });
   });
 
   group('LocalFileStorage', () {
@@ -125,6 +139,52 @@ void main() {
       expect(
         () => storage.loadCompiled('city'),
         throwsA(isA<GraphFormatException>()),
+      );
+    });
+
+    test('detects a corrupted .index via checksum', () async {
+      // Checked separately from the `.graph`, and it has to be: the index is
+      // what turns a coordinate into a vertex, so a corrupt one does not fail
+      // to route — it routes from somewhere else.
+      await storage.saveGraph('city', buildGrid(n: 4));
+      final f = File('${dir.path}/city_car.index');
+      final bytes = await f.readAsBytes();
+      bytes[bytes.length - 1] ^= 0xFF;
+      await f.writeAsBytes(bytes, flush: true);
+
+      expect(
+        () => storage.loadCompiled('city'),
+        throwsA(isA<GraphFormatException>()),
+      );
+    });
+
+    test('refuses a stored graph written by another build', () async {
+      // The `.meta` records the format version, and a mismatch is refused
+      // before a byte of the graph is read. Refusing is the point: a v3 graph
+      // read as a v4 has no split junctions, so every turn restriction in the
+      // city silently fails to apply and the routes look entirely reasonable
+      // while being illegal to follow.
+      await storage.saveGraph('city', buildGrid(n: 4));
+
+      final meta = File('${dir.path}/city_car.meta');
+      final json = await meta.readAsString();
+      await meta.writeAsString(
+        json.replaceFirst(
+          '"formatVersion":$kGraphFormatVersion',
+          '"formatVersion":${kGraphFormatVersion - 1}',
+        ),
+        flush: true,
+      );
+
+      expect(
+        () => storage.loadCompiled('city'),
+        throwsA(
+          isA<GraphFormatException>().having(
+            (e) => e.message,
+            'message',
+            contains('format version'),
+          ),
+        ),
       );
     });
 

@@ -40,6 +40,17 @@ class VehicleProfile {
   /// explicit `oneway:bicycle`.
   final bool honorOneway;
 
+  /// The `except=` values that exempt this mode from a turn restriction.
+  ///
+  /// A sign reading "no left turn except buses" is tagged `except=psv`, and a
+  /// router that ignores that applies the restriction to everyone. The
+  /// over-restriction is systematic, and it lands hardest on the modes with
+  /// the fewest alternatives — a bicycle turned out of a contraflow has a long
+  /// way round.
+  ///
+  /// Matched case-insensitively against the `;`-separated list on the relation.
+  final Set<String> restrictionExceptions;
+
   const VehicleProfile({
     required this.name,
     required this.routableHighways,
@@ -48,6 +59,7 @@ class VehicleProfile {
     required this.accessKeys,
     required this.honorOneway,
     this.ignoreWayMaxspeed = false,
+    this.restrictionExceptions = const {},
   });
 
   /// Highway classes drivable by motor vehicles. Shared by [car] and
@@ -136,6 +148,9 @@ class VehicleProfile {
     maxSpeedKmh: 25,
     ignoreWayMaxspeed: true,
     accessKeys: ['bicycle', 'vehicle', 'access'],
+    // A turn barred to motor traffic is routinely still open to a bicycle,
+    // and both spellings appear in the wild.
+    restrictionExceptions: {'bicycle', 'cycle'},
     honorOneway: false,
   );
 
