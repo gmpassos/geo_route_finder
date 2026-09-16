@@ -517,11 +517,11 @@ class OsmConverter {
         fragments.add(current);
       }
 
-      final source = coords[id];
-      if (source == null) {
-        current = <int>[];
-        continue;
-      }
+      // Present by construction: `barrierNodes` and `coords` are filled on the
+      // same pass under the same condition, and a tagged node fires both
+      // callbacks. Asserted rather than guarded, so that a change to either
+      // fails here loudly instead of quietly dropping the far side of a gate.
+      final source = coords[id]!;
 
       final twinId = _nextTwinId--;
       coords[twinId] = GeoNode(id: twinId, lat: source.lat, lon: source.lon);

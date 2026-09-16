@@ -364,7 +364,10 @@ abstract class GraphRouteFinder implements RouteFinder {
   }
 
   /// Whether this graph has any access-only edges at all.
-  bool get hasAccessOnlyEdges => _hasAccessOnly;
+  ///
+  /// Only ever false for a graph built before they were read, or one with no
+  /// driveway, car park or track in it. Checked first by [isAccessBlocked] and
+  /// [_computeAccessZones] so that such a graph pays nothing.
   bool _hasAccessOnly = false;
 
   /// Whether every edge leaving [v] may only be used to reach something on it.

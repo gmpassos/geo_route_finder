@@ -270,6 +270,45 @@ void main() {
     });
   });
 
+  group('at the edge of a clipped extract', () {
+    test('a way running past the box keeps the part inside it', () async {
+      // Every pack is built from a clip, so a way whose far nodes fall outside
+      // the box is the ordinary case rather than a corruption. The severing
+      // walk reads the whole node list, so it meets those ids too.
+      final pbf = buildOsmPbf(
+        nodeIds: const [1, 2],
+        lats: const [-23.500, -23.500],
+        lons: const [-46.700, -46.690],
+        ways: [
+          // Nodes 3 and 4 are referenced and never defined.
+          (
+            id: 10,
+            nodeIds: const [1, 2, 3, 4],
+            tags: const {'highway': 'service'},
+          ),
+        ],
+      );
+
+      final path = writeTempPbf(pbf);
+      try {
+        final geo = await OsmConverter().toGeoGraph(path);
+
+        expect(geo.nodes.map((n) => n.id), containsAll(<int>[1, 2]));
+        expect(
+          geo.edges.any((e) => e.sourceId == 1 && e.targetId == 2),
+          isTrue,
+        );
+        expect(
+          geo.nodes.any((n) => n.id < 0),
+          isFalse,
+          reason: 'nothing was severed, so no twin should exist',
+        );
+      } finally {
+        File(path).parent.deleteSync(recursive: true);
+      }
+    });
+  });
+
   group('reading them can be declined', () {
     test('readBarriers: false leaves the road whole', () async {
       final path = writeTempPbf(

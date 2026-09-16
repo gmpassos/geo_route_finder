@@ -56,8 +56,6 @@ class _Shortcut {
 /// endpoint itself when that endpoint is on a public road, which is the
 /// ordinary case.
 class _PrivateWalk {
-  final ContractionHierarchyRouter _router;
-
   /// The vertex the walk started from: the source, or the target.
   final int origin;
 
@@ -73,7 +71,7 @@ class _PrivateWalk {
   /// The routing edge taken to get there.
   final stepEdge = <int, int>{};
 
-  _PrivateWalk(this._router, this.origin, this.outward);
+  _PrivateWalk(this.origin, this.outward);
 
   /// The routing edges from [origin] to [v], in travel order.
   ///
@@ -110,11 +108,6 @@ class _PrivateWalk {
     }
     return edges;
   }
-
-  @override
-  String toString() =>
-      '_PrivateWalk(${outward ? 'out of' : 'into'} $origin, '
-      '${cost.length} vertices, router: ${_router.runtimeType})';
 }
 
 /// Contraction-Hierarchies router: optional preprocessing that yields
@@ -613,7 +606,7 @@ class ContractionHierarchyRouter extends GraphRouteFinder {
   /// An endpoint that is not inside a private area yields just itself at zero
   /// cost, which makes every caller below the ordinary case with no branch.
   _PrivateWalk _walkPrivate(int from, {required bool outward}) {
-    final walk = _PrivateWalk(this, from, outward);
+    final walk = _PrivateWalk(from, outward);
     if (!isInsidePrivateArea(from)) {
       walk.cost[from] = 0;
       return walk;
