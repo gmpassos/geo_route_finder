@@ -481,7 +481,33 @@ class GraphCompressor {
     // points at it.
     for (var v = 0; v < g.nodeCount; v++) {
       final parent = splitParent[v];
-      if (parent >= 0) pinned[parent] = true;
+      if (parent < 0) continue;
+
+      pinned[parent] = true;
+
+      // And the copy itself, which is the correction.
+      //
+      // Splitting leaves the junction with an in-degree of zero: every
+      // approach is retargeted onto a copy, so the parent is somewhere you can
+      // leave and never arrive. That is deliberate, and `RouteFinder` makes it
+      // work by treating the copies as aliases of the parent — snapping gives
+      // the parent, the alias loop reaches a copy.
+      //
+      // It only works while the copies exist. An `only_*` copy has one way in
+      // and one out, which is exactly the shape a chain merge swallows, and
+      // contracting it splices the approach straight to the exit. The routing
+      // stays correct — but the parent is left with no aliases and no
+      // in-degree, so *nothing can be delivered to that junction*. It reads as
+      // "no route" for an address plainly on a street.
+      //
+      // Measured on Florianópolis before this: 76 junctions unreachable from
+      // anywhere in the city, one of them Avenida Madre Benvenuta.
+      //
+      // The cost is the chain merge that swallowed them, which was a real
+      // saving: an `only_*` copy collapsing into one edge *is* the restriction
+      // at no cost in vertices. Correctness first; the copies are a fraction
+      // of a percent of the graph.
+      pinned[v] = true;
     }
 
     return pinned;

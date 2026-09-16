@@ -1,3 +1,36 @@
+## 1.4.1
+
+- **A restricted junction could not be delivered to.** Splitting a junction
+  retargets every approach onto a copy, which leaves the junction itself with
+  an in-degree of zero — deliberately, because `RouteFinder` treats the copies
+  as aliases and routes to one of those instead.
+
+  That only works while the copies exist. An `only_*` copy has one way in and
+  one way out, which is exactly the shape the chain compressor swallows, and
+  contracting it splices the approach straight to the permitted exit. Routing
+  *through* stayed perfect — which is why nothing caught it — but the junction
+  was left with no aliases and no in-degree, so nothing could stop there. It
+  reads to a rider as "no route" for an address plainly on a street.
+
+  Measured on Florianópolis: **76 junctions unreachable from anywhere in the
+  city**, Avenida Madre Benvenuta among them. Split copies are pinned now, as
+  their parents already were.
+
+  The cost is the merge that swallowed them, which was a real saving — an
+  `only_*` copy collapsing into a single edge *is* the restriction, at no cost
+  in vertices. Compression on that city drops from 70.4% of nodes to 69.6%.
+
+- **New `reachability_test.dart` asks structural questions**, which is the
+  kind of test whose absence let the above stay hidden. Every other test in
+  this package asks "does this shape route the way I expect"; each of those 76
+  junctions routed through perfectly, and nothing ever asked whether a rider
+  could *stop* at one.
+
+  Nine shapes, six of which fail without the fix. They matter because two-way
+  streets hide it completely: the junction stays reachable from whichever arm
+  was not restricted, so the bug only appears in a one-way grid — which is
+  what a Brazilian city centre is.
+
 ## 1.4.0
 
 - **A driveway is somewhere to arrive, not somewhere to cut through.** A car
