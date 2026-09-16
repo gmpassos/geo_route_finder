@@ -214,78 +214,164 @@ void main() {
       }
     }
 
-    test('a value that names no movement is not guessed at', () async {
-      // Both tags present, neither readable. The vocabulary is `no_*` and
-      // `only_*` over a closed set of movements, and the two prefixes mean
-      // opposite things — a value outside it cannot be leaned either way, so
-      // the relation is counted and dropped.
-      final (graph, stats) = await readOne(const {
-        'type': 'restriction',
-        'restriction': 'left_turn_prohibited',
-        'restriction:conditional': 'weekend_ban @ (Sa,Su)',
+    group('the vocabulary of `no` and `only`', () {
+      /// What the converter made of a single `restriction` value: whether it
+      /// is an `only_*`, or null when the value named no movement.
+      Future<bool?> kindOf(String value) async {
+        final (graph, stats) = await readOne({
+          'type': 'restriction',
+          'restriction': value,
+        });
+
+        if (graph.turnRestrictions.isEmpty) {
+          // Dropped is not enough — it has to be *counted*, or a mis-tagged
+          // relation leaves no trace in the build report at all.
+          expect(
+            stats.unresolvedMember,
+            equals(1),
+            reason: '"$value" was dropped without being counted',
+          );
+          return null;
+        }
+
+        expect(stats.accepted, equals(1));
+        return graph.turnRestrictions.single.isOnly;
+      }
+
+      // The whole standard vocabulary, because the prefix and the movement are
+      // read separately and a set that is missing one value drops every sign
+      // in the city that uses it — silently, since the restriction simply
+      // never arrives.
+      const readable = {
+        'no_left_turn': false,
+        'no_right_turn': false,
+        'no_straight_on': false,
+        'no_u_turn': false,
+        'no_entry': false,
+        'no_exit': false,
+        'only_left_turn': true,
+        'only_right_turn': true,
+        'only_straight_on': true,
+        'only_u_turn': true,
+      };
+
+      for (final entry in readable.entries) {
+        test('`${entry.key}` is read as a restriction', () async {
+          expect(
+            await kindOf(entry.key),
+            equals(entry.value),
+            reason: entry.value
+                ? 'an `only_*` keeps one exit and removes the rest'
+                : 'a `no_*` removes one exit and keeps the rest',
+          );
+        });
+      }
+
+      // Values that begin like a restriction and are not one. Reading any of
+      // these as a ban removes a movement the sign never mentioned — and the
+      // relation's members then supply a concrete turn the value never
+      // described, so the rider goes the long way round a junction they could
+      // have turned at.
+      const notRestrictions = [
+        'no parking',
+        'no_parking',
+        'no stopping',
+        'no_standing',
+        'nonsense',
+        'notice',
+        'north',
+        'only_buses',
+        'no',
+        'only',
+        'no_',
+        'only_',
+        'left_turn_prohibited',
+        'yes',
+        '',
+      ];
+
+      for (final value in notRestrictions) {
+        test('`$value` is not a restriction', () async {
+          expect(await kindOf(value), isNull);
+        });
+      }
+
+      test('separators and case are forgiven', () async {
+        // The strictness is about the *movement*, not the spelling. This is
+        // hand-edited data, and rejecting `No Left Turn` would drop a real ban
+        // over a space.
+        for (final spelling in [
+          'No Left Turn',
+          'NO_LEFT_TURN',
+          'no-left-turn',
+          '  no_left_turn  ',
+          'no   left   turn',
+        ]) {
+          expect(
+            await kindOf(spelling),
+            isFalse,
+            reason: '"$spelling" is the same sign as no_left_turn',
+          );
+        }
       });
 
-      expect(graph.turnRestrictions, isEmpty);
-      expect(stats.accepted, isZero);
-      expect(stats.unresolvedMember, equals(1));
-    });
-
-    test('`no parking` is not a turn restriction', () async {
-      // It starts with `no`, which the prefix alone cannot tell from a ban —
-      // and reading it as one removes a movement the sign never mentioned,
-      // sending a rider the long way round a junction they could have turned
-      // at. What settles it is that `parking` is not a movement.
-      final (graph, stats) = await readOne(const {
-        'type': 'restriction',
-        'restriction': 'no parking',
+      test('a value listing several bans is still one ban', () async {
+        // One relation forbidding two movements. Which turn it means comes
+        // from the members either way; the value only has to say `no` rather
+        // than `only`.
+        expect(await kindOf('no_left_turn;no_u_turn'), isFalse);
+        expect(await kindOf('only_straight_on;only_right_turn'), isTrue);
       });
 
-      expect(graph.turnRestrictions, isEmpty);
-      expect(
-        stats.unresolvedMember,
-        equals(1),
-        reason: 'counted, so a mis-tagged relation is visible in the build',
-      );
-    });
-
-    test('separators and case are forgiven, vocabulary is not', () async {
-      // The strictness is about the *movement*, not the spelling. This is
-      // hand-edited data and `No Left Turn` is the same sign as
-      // `no_left_turn`, so rejecting it would drop a real ban over a space.
-      final (graph, stats) = await readOne(const {
-        'type': 'restriction',
-        'restriction': 'No Left Turn',
+      test('an unreadable part does not spoil a readable one', () async {
+        expect(await kindOf('no_parking;no_left_turn'), isFalse);
       });
 
-      expect(graph.turnRestrictions, hasLength(1));
-      expect(graph.turnRestrictions.single.isOnly, isFalse);
-      expect(stats.accepted, equals(1));
-    });
-
-    test('a value listing several bans is still one ban', () async {
-      // `no_left_turn;no_u_turn` is one relation forbidding two movements, and
-      // which turn it means comes from the members either way — the value only
-      // has to say `no` rather than `only`.
-      final (graph, _) = await readOne(const {
-        'type': 'restriction',
-        'restriction': 'no_left_turn;no_u_turn',
+      test('a value that both bans and mandates is refused', () async {
+        // One record cannot be an `only_*` and a `no_*` at once, and choosing
+        // either half states something the source did not: `only_straight_on`
+        // removes every exit but one, `no_left_turn` removes exactly one.
+        expect(await kindOf('no_left_turn;only_straight_on'), isNull);
+        expect(await kindOf('only_straight_on;no_left_turn'), isNull);
       });
 
-      expect(graph.turnRestrictions, hasLength(1));
-      expect(graph.turnRestrictions.single.isOnly, isFalse);
-    });
+      test('a timetable is not read as part of the movement', () async {
+        // The `@` is split off *before* the `;` list, and the order matters:
+        // `opening_hours` uses `;` to separate its own rules, so splitting the
+        // other way round would hand `Sa 08:00-12:00)` to the vocabulary check
+        // and turn a readable restriction into an unreadable one.
+        final (graph, _) = await readOne(const {
+          'type': 'restriction',
+          'restriction:conditional':
+              'no_left_turn @ (Mo-Fr 07:00-09:00; Sa 08:00-12:00)',
+        });
 
-    test('a value that both bans and mandates is refused', () async {
-      // One record cannot be an `only_*` and a `no_*` at once, and choosing
-      // either half states something the source did not: `only_straight_on`
-      // removes every other exit, `no_left_turn` removes one.
-      final (graph, stats) = await readOne(const {
-        'type': 'restriction',
-        'restriction': 'no_left_turn;only_straight_on',
+        expect(graph.turnRestrictions, hasLength(1));
+
+        final r = graph.turnRestrictions.single;
+        expect(r.isOnly, isFalse);
+        expect(
+          r.condition,
+          equals('no_left_turn @ (Mo-Fr 07:00-09:00; Sa 08:00-12:00)'),
+          reason: 'the expression is stored whole, timetable included',
+        );
       });
 
-      expect(graph.turnRestrictions, isEmpty);
-      expect(stats.unresolvedMember, equals(1));
+      test('both tags unreadable drops the relation once', () async {
+        final (graph, stats) = await readOne(const {
+          'type': 'restriction',
+          'restriction': 'left_turn_prohibited',
+          'restriction:conditional': 'weekend_ban @ (Sa,Su)',
+        });
+
+        expect(graph.turnRestrictions, isEmpty);
+        expect(stats.accepted, isZero);
+        expect(
+          stats.unresolvedMember,
+          equals(1),
+          reason: 'one relation, one count — not one per unreadable tag',
+        );
+      });
     });
 
     test('convert carries restrictions into a plain storage too', () async {
@@ -907,6 +993,96 @@ void main() {
         restricted.distanceMeters,
         greaterThan(direct.distanceMeters),
         reason: 'a conditional ban with no clock must bite like a fixed one',
+      );
+    });
+
+    test('a conditional `only_*` flags every exit but the one', () async {
+      // The hardest combination in the feature, and the one where getting the
+      // set backwards is least visible. An unconditional `only_*` deletes the
+      // other exits; a conditional one cannot, because the same graph has to
+      // answer both states — so the copy keeps *every* exit and flags all of
+      // them except the one the sign names. Flag the named exit instead and
+      // the restriction is inverted: the only legal movement becomes the only
+      // forbidden one.
+      final g = split(
+        crossroads(
+          restriction: 'only',
+          condition: 'only_straight_on @ (Mo-Fr 07:00-09:00)',
+        ),
+      );
+
+      final arrival = arrivalOf(g, 2, 3);
+      expect(g.isSplitCopy(arrival), isTrue);
+      expect(
+        exitsFrom(g, arrival),
+        equals({2, 4, 5, 6}),
+        reason: 'nothing is deleted — the ban only applies inside the window',
+      );
+
+      for (var e = g.adjOffset[arrival]; e < g.adjOffset[arrival + 1]; e++) {
+        final to = g.originalId[g.adjTarget[e]];
+
+        if (to == 4) {
+          expect(
+            g.conditionOf(e),
+            isNull,
+            reason: 'the movement the sign permits is never conditional',
+          );
+        } else {
+          expect(
+            g.conditionOf(e),
+            equals('only_straight_on @ (Mo-Fr 07:00-09:00)'),
+            reason: 'exit to $to is forbidden while the window is open',
+          );
+        }
+      }
+    });
+
+    test('a conditional `only_*` binds and releases on the clock', () async {
+      // The same restriction as a rider meets it. Inside the window the only
+      // way to 5 is out to 4 and back — which is legal, because arriving at
+      // the junction from 4 is a different approach that no sign governs.
+      final storage = MemoryStorage();
+      await storage.saveGraph(
+        'r',
+        crossroads(
+          restriction: 'only',
+          condition: 'only_straight_on @ (Mo-Fr 07:00-09:00)',
+        ),
+      );
+
+      // Node 5, which is *not* the exit the sign permits — node 4 is. Routing
+      // to the permitted exit would be 1500 m in every case and would prove
+      // nothing about the condition.
+      const from = GeoCoordinate(lat: -23.500, lon: -46.700); // node 1
+      const to = GeoCoordinate(lat: -23.490, lon: -46.680); // node 5
+
+      final router = DijkstraRouter(storage: storage, graphId: 'r');
+
+      // Monday 08:00 — only straight on, so the turn to 5 is closed and the
+      // route goes 1-2-3' -> 4 -> 3 -> 5 rather than turning at the junction.
+      final restricted = await router.findRoute(
+        from,
+        to,
+        at: DateTime(2026, 9, 14, 8),
+      );
+      expect(restricted.found, isTrue);
+      expect(restricted.distanceMeters, closeTo(2500, 1));
+
+      // Sunday 08:00 — outside the window, so every exit is open again.
+      final open = await router.findRoute(
+        from,
+        to,
+        at: DateTime(2026, 9, 13, 8),
+      );
+      expect(open.distanceMeters, closeTo(1500, 1));
+
+      // And with no clock at all, the strictest reading stands.
+      final noClock = await router.findRoute(from, to);
+      expect(
+        noClock.distanceMeters,
+        closeTo(2500, 1),
+        reason: 'not knowing the time is not a reason to assume it is open',
       );
     });
 
