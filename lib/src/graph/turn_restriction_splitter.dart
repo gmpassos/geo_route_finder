@@ -180,10 +180,32 @@ class TurnRestrictionSplitter {
     }
 
     final conditions = <String>[];
+
+    /// A 1-based index into [conditions], saturating at the byte's ceiling.
+    ///
+    /// Past 255 distinct expressions the index would wrap, and a wrapped value
+    /// is still in range — so one edge would lose its condition entirely and
+    /// others would be judged against a different junction's timetable, with
+    /// nothing to catch either. The overflow slot is a sentinel no parser can
+    /// read, which is therefore always in force.
     int conditionIndex(String? condition) {
       if (condition == null) return 0;
+
       final at = conditions.indexOf(condition);
-      return (at >= 0 ? at : (conditions..add(condition)).length - 1) + 1;
+      if (at >= 0) return at + 1;
+
+      if (conditions.length + 1 >= RoutingGraph.conditionOverflowIndex) {
+        while (conditions.length < RoutingGraph.conditionOverflowIndex - 1) {
+          conditions.add(RoutingGraph.overflowCondition);
+        }
+        if (conditions.length < RoutingGraph.conditionOverflowIndex) {
+          conditions.add(RoutingGraph.overflowCondition);
+        }
+        return RoutingGraph.conditionOverflowIndex;
+      }
+
+      conditions.add(condition);
+      return conditions.length;
     }
 
     final adjOffset = Int32List(total + 1);
@@ -225,9 +247,17 @@ class TurnRestrictionSplitter {
 
       // The copy's exits are the parent's, minus what the sign removed. A
       // conditionally forbidden one is kept and flagged.
+      //
+      // **`retarget` applies here too, and leaving it out was a real bug.** An
+      // exit of this copy may itself be the approach of *another* restriction
+      // — junctions in series, which a one-way grid with a `no_left_turn` on
+      // consecutive blocks produces immediately. Without the retarget that
+      // exit still points at the next junction's *original* vertex, so leaving
+      // this junction hands the rider a clean entry into the next one and the
+      // second sign is not enforced for anyone who came this way.
       for (var e = g.adjOffset[copy.via]; e < g.adjOffset[copy.via + 1]; e++) {
         if (!copy.allowed.containsKey(e)) continue;
-        copyEdge(e, condition: copy.allowed[e]);
+        copyEdge(e, target: retarget[e], condition: copy.allowed[e]);
       }
     }
 

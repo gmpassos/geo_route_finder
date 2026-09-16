@@ -290,10 +290,14 @@ abstract class GraphRouteFinder implements RouteFinder {
 
     RawPath? best;
     for (final t in targets) {
-      if (t == source) continue;
       final path = search(source, t, at: at);
       if (!path.found) continue;
-      if (best == null || path.distanceMeters < best.distanceMeters) {
+      // By **time**, because that is what the search minimised and what
+      // `findRoute` promises. Choosing the shortest arrival instead can return
+      // a route several times slower than one the search already found, and
+      // only ever at a split junction — so it would be invisible everywhere
+      // except the case this loop exists for.
+      if (best == null || path.timeSeconds < best.timeSeconds) {
         best = path;
       }
     }
@@ -499,11 +503,24 @@ abstract class GraphRouteFinder implements RouteFinder {
     }
 
     RawPath? best;
+    var bestCost = double.infinity;
+
     for (final t in targets) {
-      if (t == source) continue;
       final path = _penalizedSearch(source, t, penalty, at);
       if (!path.found) continue;
-      if (best == null || path.distanceMeters < best.distanceMeters) {
+
+      // Compared on the **penalized** cost, which is what this search
+      // minimised. Comparing on distance — or even on real time — throws away
+      // the 1e6 the toll penalty just spent saying "not this way", so a
+      // shorter tolled arrival would beat a longer toll-free one and
+      // `avoidTolls: true` would be defeated at the last step.
+      var cost = 0.0;
+      for (final e in path.edges) {
+        cost += graph.adjTime[e] * penalty[e];
+      }
+
+      if (cost < bestCost) {
+        bestCost = cost;
         best = path;
       }
     }

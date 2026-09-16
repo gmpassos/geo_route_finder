@@ -820,6 +820,168 @@ void main() {
       );
     });
 
+    test('two restricted junctions in series both bind', () async {
+      // Arriving at a junction through a restricted approach lands on a copy,
+      // and the copy's exits are the parent's. If one of those exits is itself
+      // the approach of a *second* restriction, it has to lead to that
+      // restriction's copy too — otherwise leaving the first junction hands
+      // the rider a clean entry into the second, and the second sign is not
+      // enforced for anyone who came that way.
+      //
+      // A one-way grid with a `no_left_turn` on consecutive blocks is exactly
+      // this shape, so it is ordinary city data rather than a corner case.
+      //
+      //   1 — 2 — 3 — 6
+      //       |
+      //       5
+      const nodes = [
+        GeoNode(id: 1, lat: -23.500, lon: -46.700),
+        GeoNode(id: 2, lat: -23.500, lon: -46.690),
+        GeoNode(id: 3, lat: -23.500, lon: -46.680),
+        GeoNode(id: 5, lat: -23.510, lon: -46.690),
+        GeoNode(id: 6, lat: -23.500, lon: -46.670),
+      ];
+
+      const edges = [
+        GeoEdge(sourceId: 1, targetId: 2, distanceMeters: 500, speedKmh: 36),
+        GeoEdge(sourceId: 2, targetId: 3, distanceMeters: 500, speedKmh: 36),
+        GeoEdge(sourceId: 2, targetId: 5, distanceMeters: 500, speedKmh: 36),
+        GeoEdge(sourceId: 3, targetId: 6, distanceMeters: 500, speedKmh: 36),
+      ];
+
+      final geo = GeoGraph(
+        nodes: nodes,
+        edges: edges,
+        turnRestrictions: const [
+          // Arriving at 2 from 1, you may not turn to 5.
+          GeoTurnRestriction(
+            fromNodeId: 1,
+            viaNodeId: 2,
+            toNodeId: 5,
+            isOnly: false,
+          ),
+          // Arriving at 3 from 2, you may not continue to 6.
+          GeoTurnRestriction(
+            fromNodeId: 2,
+            viaNodeId: 3,
+            toNodeId: 6,
+            isOnly: false,
+          ),
+        ],
+      );
+
+      final storage = MemoryStorage();
+      await storage.saveGraph('series', geo);
+
+      // 6 hangs off 3, and 3 is only reachable from 2 — by the one edge the
+      // second sign restricts. So there is no legal way in.
+      final route = await DijkstraRouter(storage: storage, graphId: 'series')
+          .findRoute(
+            const GeoCoordinate(lat: -23.500, lon: -46.700), // 1
+            const GeoCoordinate(lat: -23.500, lon: -46.670), // 6
+          );
+
+      expect(
+        route.found,
+        isFalse,
+        reason:
+            'the second restriction must bind a rider who arrived through '
+            'the first',
+      );
+    });
+
+    test('more conditions than a byte can hold saturate, not wrap', () async {
+      // `adjCond` is one byte per edge, so past 255 distinct expressions the
+      // index would wrap — and a wrapped value is still *in range*, so one
+      // edge silently loses its condition and others are judged against some
+      // other junction's timetable. Neither throws; both are wrong answers.
+      //
+      // The overflow slot holds an expression no parser can read, so it is
+      // always in force: the failure over-restricts, which is the direction
+      // every other decision here leans.
+      const junction = 2;
+      final nodes = <GeoNode>[
+        const GeoNode(id: 1, lat: -23.500, lon: -46.700),
+        const GeoNode(id: junction, lat: -23.500, lon: -46.690),
+        for (var i = 0; i < 300; i++)
+          GeoNode(id: 100 + i, lat: -23.510 - i * 0.001, lon: -46.690),
+      ];
+
+      final edges = <GeoEdge>[
+        const GeoEdge(
+          sourceId: 1,
+          targetId: junction,
+          distanceMeters: 500,
+          speedKmh: 36,
+        ),
+        for (var i = 0; i < 300; i++)
+          GeoEdge(
+            sourceId: junction,
+            targetId: 100 + i,
+            distanceMeters: 500,
+            speedKmh: 36,
+          ),
+      ];
+
+      final geo = GeoGraph(
+        nodes: nodes,
+        edges: edges,
+        turnRestrictions: [
+          for (var i = 0; i < 300; i++)
+            GeoTurnRestriction(
+              fromNodeId: 1,
+              viaNodeId: junction,
+              toNodeId: 100 + i,
+              isOnly: false,
+              // Distinct per exit, which is what a city's worth of free-text
+              // conditional expressions looks like.
+              condition: 'no_turn @ (Mo-Fr 0$i:00-09:00)',
+            ),
+        ],
+      );
+
+      final g = const TurnRestrictionSplitter().split(
+        const GraphBuilder().build(geo),
+        geo.turnRestrictions,
+      );
+
+      expect(
+        g.conditions.length,
+        lessThanOrEqualTo(RoutingGraph.conditionOverflowIndex),
+        reason: 'a byte cannot index more than this',
+      );
+
+      // No restricted exit carries an index past the end of the table, and
+      // none wrapped to zero — which would read as "no condition at all", and
+      // is exactly what the unguarded version produced.
+      //
+      // The way back to node 1 is not restricted and is expected to be 0, so
+      // only the exits the signs name are checked.
+      final arrival = arrivalOf(g, 1, junction);
+      var restricted = 0;
+
+      for (var e = g.adjOffset[arrival]; e < g.adjOffset[arrival + 1]; e++) {
+        if (g.originalId[g.adjTarget[e]] == 1) continue;
+
+        final index = g.adjCond![e];
+        expect(index, isNot(isZero), reason: 'a sign names this exit');
+        expect(index, lessThanOrEqualTo(g.conditions.length));
+        expect(g.conditionOf(e), isNotNull);
+        restricted++;
+      }
+
+      expect(restricted, equals(300));
+
+      // And the overflow reading is "in force", not "open".
+      expect(
+        ConditionalRestriction.appliesAt(
+          RoutingGraph.overflowCondition,
+          DateTime(2026, 9, 13, 3),
+        ),
+        isTrue,
+      );
+    });
+
     test('the alias loop takes the direct way in, not a lap', () async {
       // The destination fix, on the shape that actually reaches it.
       //

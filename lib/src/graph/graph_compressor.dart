@@ -337,9 +337,24 @@ class GraphCompressor {
 
       final condition = m.condition;
       if (condition != null) {
+        // Saturating at the byte's ceiling, for the same reason the splitter
+        // does: past 255 the index wraps into a *valid-looking* value, so an
+        // edge silently inherits another junction's timetable. The overflow
+        // slot is an expression no parser can read, and is therefore always in
+        // force.
         final at = conditions.indexOf(condition);
-        adjCond[i] =
-            (at >= 0 ? at : (conditions..add(condition)).length - 1) + 1;
+        if (at >= 0) {
+          adjCond[i] = at + 1;
+        } else if (conditions.length + 1 >=
+            RoutingGraph.conditionOverflowIndex) {
+          while (conditions.length < RoutingGraph.conditionOverflowIndex) {
+            conditions.add(RoutingGraph.overflowCondition);
+          }
+          adjCond[i] = RoutingGraph.conditionOverflowIndex;
+        } else {
+          conditions.add(condition);
+          adjCond[i] = conditions.length;
+        }
       }
 
       adjTarget[i] = m.newTarget;
@@ -384,30 +399,41 @@ class GraphCompressor {
     final pinned = List<bool>.filled(g.nodeCount, false);
 
     final splitParent = g.splitParent;
-    if (splitParent == null) return pinned;
-
     final adjCond = g.adjCond;
 
-    for (var v = 0; v < g.nodeCount; v++) {
-      final parent = splitParent[v];
-      if (parent < 0) continue;
-
-      // The junction itself: retargeting an approach onto a copy lowers its
-      // in-degree, and a crossroads that drops to degree 2 would otherwise be
-      // contracted out from under every copy that points at it.
-      pinned[parent] = true;
-
-      if (adjCond == null) continue;
-
-      // A copy whose exits carry a condition, because the query-time check
-      // reads `adjCond` on an edge leaving it. A copy with no condition may
-      // collapse freely, and usually does.
-      for (var e = g.adjOffset[v]; e < g.adjOffset[v + 1]; e++) {
-        if (adjCond[e] != 0) {
-          pinned[v] = true;
-          break;
+    // Any vertex with a conditional edge leaving it, split copy or not.
+    //
+    // **Scanned independently of `splitParent`, and that matters.** The two
+    // fields are independent optionals: `RoutingGraph` is exported, and the
+    // deserializer reads the two header flags separately with no cross-check,
+    // so a graph with conditions and no split parents is a shape the types and
+    // the format both permit. Returning early when `splitParent` was null left
+    // *nothing* pinned for such a graph, and a conditional edge was then free
+    // to be swallowed into a chain interior — where the merge keeps only the
+    // first edge's condition and the restriction is silently lost.
+    //
+    // The query-time check reads `adjCond` on an edge leaving this vertex, and
+    // a contracted vertex is one a merge can span, so the vertex has to stay.
+    if (adjCond != null) {
+      for (var v = 0; v < g.nodeCount; v++) {
+        for (var e = g.adjOffset[v]; e < g.adjOffset[v + 1]; e++) {
+          if (adjCond[e] != 0) {
+            pinned[v] = true;
+            break;
+          }
         }
       }
+    }
+
+    if (splitParent == null) return pinned;
+
+    // And every junction that has been split: retargeting an approach onto a
+    // copy lowers the junction's in-degree, so a crossroads that drops to
+    // degree 2 would otherwise be contracted out from under every copy that
+    // points at it.
+    for (var v = 0; v < g.nodeCount; v++) {
+      final parent = splitParent[v];
+      if (parent >= 0) pinned[parent] = true;
     }
 
     return pinned;

@@ -97,6 +97,26 @@ class RoutingGraph {
   /// per incoming edge.
   final Uint8List? adjCond;
 
+  /// The highest condition index a byte can carry, reserved to mean "in force
+  /// whenever anyone asks".
+  ///
+  /// [adjCond] is one byte per edge, so a graph cannot distinguish more than
+  /// 255 conditions. Past that the index would wrap — silently, since a
+  /// wrapped value is still in range: one edge's condition would vanish
+  /// (the turn permanently open) and others would be evaluated against **some
+  /// other junction's timetable**. Both are wrong answers that no check would
+  /// catch.
+  ///
+  /// So the last slot is a sentinel instead. Everything beyond the cap maps to
+  /// it, and it holds an expression no parser can read — which
+  /// `ConditionalRestriction` treats as always in force. The overflow
+  /// therefore over-restricts, which is the same direction every other
+  /// decision here leans.
+  static const int conditionOverflowIndex = 255;
+
+  /// The sentinel expression [conditionOverflowIndex] points at.
+  static const String overflowCondition = 'restriction:unrepresentable';
+
   /// The distinct `restriction:conditional` expressions [adjCond] indexes.
   ///
   /// Kept as written, because they are evaluated against the clock a query
