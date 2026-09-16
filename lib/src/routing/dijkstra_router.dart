@@ -42,6 +42,7 @@ class DijkstraRouter extends GraphRouteFinder {
         // `d` is real seconds on this path — no penalty is applied — so it is
         // the time the rider reaches this junction.
         if (isBlocked(e, d, at)) continue;
+        if (isAccessBlocked(u, e)) continue;
         final v = g.adjTarget[e];
         final nd = d + w;
         if (nd < dist[v]) {

@@ -200,6 +200,7 @@ abstract class GraphRouteFinder implements RouteFinder {
     }
 
     _buildAliases();
+    _buildAccessIndex();
 
     await prepare();
     _prepared = true;
@@ -313,9 +314,156 @@ abstract class GraphRouteFinder implements RouteFinder {
     return aliases == null ? [target] : [target, ...aliases];
   }
 
+  /// Predecessors along access-only edges, for vertices that have any.
+  ///
+  /// The reverse of the access-only subgraph and nothing else. A full reverse
+  /// CSR would answer the same question and cost a second copy of every edge
+  /// in the city; driveways and parking aisles are a small fraction of one.
+  Map<int, List<int>> _accessOnlyIn = const {};
+
+  /// Vertices every one of whose edges may only be used to reach something.
+  ///
+  /// The inside of a car park, a driveway, the length of a track. A street
+  /// junction with a driveway hanging off it is *not* one: it has public
+  /// edges, so it is where the private area ends.
+  ///
+  /// This is what makes the rule "reach the endpoints" rather than "a run at
+  /// each end". See [_computeAccessZones].
+  List<bool> _private = const [];
+
+  void _buildAccessIndex() {
+    final g = _graph!;
+    final incoming = <int, List<int>>{};
+
+    for (var u = 0; u < g.nodeCount; u++) {
+      for (var e = g.adjOffset[u]; e < g.adjOffset[u + 1]; e++) {
+        if (!g.isAccessOnly(e)) continue;
+        incoming.putIfAbsent(g.adjTarget[e], () => []).add(u);
+      }
+    }
+
+    final private = List<bool>.filled(g.nodeCount, false);
+    for (var v = 0; v < g.nodeCount; v++) {
+      final start = g.adjOffset[v];
+      final end = g.adjOffset[v + 1];
+      if (start == end) continue;
+
+      var all = true;
+      for (var e = start; e < end; e++) {
+        if (!g.isAccessOnly(e)) {
+          all = false;
+          break;
+        }
+      }
+      private[v] = all;
+    }
+
+    _accessOnlyIn = incoming;
+    _private = private;
+    _hasAccessOnly = incoming.isNotEmpty;
+  }
+
+  /// Whether this graph has any access-only edges at all.
+  ///
+  /// Read by `ContractionHierarchyRouter`, whose baked shortcuts cannot
+  /// express a rule that depends on where the route starts and ends.
+  bool get hasAccessOnlyEdges => _hasAccessOnly;
+  bool _hasAccessOnly = false;
+
+  /// Vertices from which this query may still *leave* along an access-only
+  /// edge — the run at the start of the route.
+  Set<int> _leavingZone = const {};
+
+  /// Vertices into which this query may *enter* along an access-only edge —
+  /// the run at the end of the route.
+  Set<int> _enteringZone = const {};
+
+  /// Works out which access-only edges this particular query may use.
+  ///
+  /// An access-only way exists to reach something on it, which is not a
+  /// property of the edge — it depends on where the rider is going. So it is
+  /// resolved per query, into the two vertex sets that bound it:
+  ///
+  /// * the private area the rider is **starting inside**, which they may drive
+  ///   out of;
+  /// * the private area the destination is **inside**, which they may drive
+  ///   into.
+  ///
+  /// Both are empty when the endpoint in question sits on a public road, and
+  /// that emptiness is the whole rule. "A run of access-only edges at each
+  /// end" sounds equivalent and is not: a route starting on a street beside a
+  /// car park could open with a run straight across it and still satisfy the
+  /// wording, which is the exact shortcut this exists to stop. A rider on a
+  /// public street has no business in the car park unless they are going
+  /// there, and if they were, the destination would be inside it.
+  ///
+  /// The walk stops at the edge of the private area — a junction with public
+  /// roads on it is where the car park ends — so both sets are a driveway or a
+  /// car park's worth of vertices. A graph with no access-only edges skips the
+  /// work entirely.
+  void _computeAccessZones(Iterable<int> sources, Iterable<int> targets) {
+    if (!_hasAccessOnly) {
+      _leavingZone = const {};
+      _enteringZone = const {};
+      return;
+    }
+
+    final g = _graph!;
+
+    // Out of the private area the rider is standing in, if they are in one.
+    final leaving = <int>{};
+    final stack = <int>[];
+    for (final s in sources) {
+      if (_private[s] && leaving.add(s)) stack.add(s);
+    }
+    while (stack.isNotEmpty) {
+      final u = stack.removeLast();
+      for (var e = g.adjOffset[u]; e < g.adjOffset[u + 1]; e++) {
+        if (!g.isAccessOnly(e)) continue;
+        final v = g.adjTarget[e];
+        // Only keep walking while still inside. The first public junction is
+        // where the private area ends and the road network begins.
+        if (_private[v] && leaving.add(v)) stack.add(v);
+      }
+    }
+
+    // Into the private area the destination is in, if it is in one.
+    final entering = <int>{};
+    stack.clear();
+    for (final t in targets) {
+      if (_private[t] && entering.add(t)) stack.add(t);
+    }
+    while (stack.isNotEmpty) {
+      final v = stack.removeLast();
+      for (final u in _accessOnlyIn[v] ?? const <int>[]) {
+        if (_private[u] && entering.add(u)) stack.add(u);
+      }
+    }
+
+    _leavingZone = leaving;
+    _enteringZone = entering;
+  }
+
+  /// Whether edge [e], leaving [u], is one this query may not use because it
+  /// may only be used to reach something on it.
+  ///
+  /// Called beside [isBlocked] in every relaxation loop. Cheap twice over: a
+  /// graph with no access-only edges answers on the first test, and one with
+  /// them only pays on the edges that carry the flag.
+  bool isAccessBlocked(int u, int e) {
+    if (!_hasAccessOnly) return false;
+    final g = graph;
+    if (!g.isAccessOnly(e)) return false;
+    return !_leavingZone.contains(u) && !_enteringZone.contains(g.adjTarget[e]);
+  }
+
   /// The cheapest path to [target] or any vertex standing in for it.
   RawPath _searchToAny(int source, int target, DateTime? at) {
     final targets = _targetsFor(target);
+    // Over every alias at once: they are the same place, so a driveway that
+    // reaches one reaches the destination.
+    _computeAccessZones(_targetsFor(source), targets);
+
     if (targets.length == 1) return search(source, targets.single, at: at);
 
     RawPath? best;
@@ -528,6 +676,8 @@ abstract class GraphRouteFinder implements RouteFinder {
     DateTime? at,
   ) {
     final targets = _targetsFor(target);
+    _computeAccessZones(_targetsFor(source), targets);
+
     if (targets.length == 1) {
       return _penalizedSearch(source, targets.single, penalty, at);
     }
@@ -591,6 +741,7 @@ abstract class GraphRouteFinder implements RouteFinder {
         final w = g.adjTime[e];
         if (w == double.infinity) continue;
         if (isBlocked(e, realTime[u], at)) continue;
+        if (isAccessBlocked(u, e)) continue;
         final v = g.adjTarget[e];
         final nd = d + w * penalty[e];
         if (nd < dist[v]) {

@@ -73,6 +73,7 @@ class AStarRouter extends GraphRouteFinder {
         // `du` is real seconds: the heuristic lives in the heap key, never in
         // `dist`. So this is the time the rider reaches this junction.
         if (isBlocked(e, du, at)) continue;
+        if (isAccessBlocked(u, e)) continue;
         final v = g.adjTarget[e];
         if (closed[v] == 1) continue;
         final nd = du + w;

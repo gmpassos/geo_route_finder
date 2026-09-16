@@ -332,6 +332,18 @@ class ContractionHierarchyRouter extends GraphRouteFinder {
     // cannot be re-weighted after the fact.
     if (at != null) return searchOverGraph(source, target, at);
 
+    // Nor can it answer over a graph with access-only edges, for a sharper
+    // reason than the clock.
+    //
+    // Whether a driveway may be used is not a property of the edge: it depends
+    // on where *this* route starts and ends. A hierarchy is built once, before
+    // anyone asks, and its shortcuts bake whole paths into single edges — so a
+    // shortcut spanning a parking aisle would carry it into every query,
+    // including the ones with no business there. There is no weight to adjust
+    // and no edge to re-admit; it is simply not a question preprocessing can
+    // be asked.
+    if (hasAccessOnlyEdges) return searchOverGraph(source, target, at);
+
     final n = graph.nodeCount;
     final distF = Float64List(n)..fillRange(0, n, double.infinity);
     final distB = Float64List(n)..fillRange(0, n, double.infinity);
