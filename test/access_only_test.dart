@@ -248,27 +248,51 @@ void main() {
       expect(route.distanceMeters, closeTo(50, 1), reason: '7-13');
     });
 
-    test('every router gives the same answer', () async {
-      // The contraction hierarchy cannot express this rule — its shortcuts are
-      // baked before anyone asks, and whether a driveway may be used depends
-      // on where the route ends — so it falls back to the plain search. This
-      // pins that it falls back rather than quietly answering 250.
+    test('every router gives the same answer, at both ends', () async {
+      // The contraction hierarchy earns its own case here. Its shortcuts are
+      // baked before anyone asks, so access-only edges are kept out of the
+      // hierarchy entirely and the private ends are walked separately and
+      // stitched on — four different shapes depending on which end is inside
+      // a private area, and each takes a different path through that code.
       final storage = MemoryStorage();
       await storage.saveGraph('r', carPark());
 
-      final routers = <RouteFinder>[
-        DijkstraRouter(storage: storage, graphId: 'r'),
-        AStarRouter(storage: storage, graphId: 'r'),
-        ContractionHierarchyRouter(storage: storage, graphId: 'r'),
-      ];
+      const inside = inTheCarPark; // node 7
+      const alsoInside = GeoCoordinate(lat: -23.5020, lon: -46.6970); // node 13
 
-      for (final router in routers) {
-        final route = await router.findRoute(onStreet, farEnd);
-        expect(
-          route.distanceMeters,
-          closeTo(1000, 1),
-          reason: '${router.runtimeType} took the bays',
-        );
+      final cases =
+          <({GeoCoordinate from, GeoCoordinate to, double m, String why})>[
+            (from: onStreet, to: farEnd, m: 1000, why: 'public to public'),
+            (from: onStreet, to: inside, m: 100, why: 'public into a car park'),
+            (
+              from: inside,
+              to: farEnd,
+              m: 150,
+              why: 'out of a car park to public',
+            ),
+            (from: inside, to: alsoInside, m: 50, why: 'inside to inside'),
+          ];
+
+      for (final c in cases) {
+        final routers = <RouteFinder>[
+          DijkstraRouter(storage: storage, graphId: 'r'),
+          AStarRouter(storage: storage, graphId: 'r'),
+          ContractionHierarchyRouter(storage: storage, graphId: 'r'),
+        ];
+
+        for (final router in routers) {
+          final route = await router.findRoute(c.from, c.to);
+          expect(
+            route.found,
+            isTrue,
+            reason: '${router.runtimeType}: ${c.why}',
+          );
+          expect(
+            route.distanceMeters,
+            closeTo(c.m, 1),
+            reason: '${router.runtimeType}: ${c.why}',
+          );
+        }
       }
     });
 

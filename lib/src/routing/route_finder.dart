@@ -364,11 +364,44 @@ abstract class GraphRouteFinder implements RouteFinder {
   }
 
   /// Whether this graph has any access-only edges at all.
-  ///
-  /// Read by `ContractionHierarchyRouter`, whose baked shortcuts cannot
-  /// express a rule that depends on where the route starts and ends.
   bool get hasAccessOnlyEdges => _hasAccessOnly;
   bool _hasAccessOnly = false;
+
+  /// Whether every edge leaving [v] may only be used to reach something on it.
+  ///
+  /// True inside a car park, along a driveway, on a track. False at the
+  /// junction where any of those meets a public road, which is exactly where
+  /// the private area ends.
+  ///
+  /// For subclasses that have to treat the private ends of a route separately
+  /// from its middle — see `ContractionHierarchyRouter`, whose hierarchy is
+  /// built over the public network alone.
+  bool isInsidePrivateArea(int v) => _hasAccessOnly && _private[v];
+
+  /// Vertices with an access-only edge leading into [v].
+  ///
+  /// The reverse of the access-only subgraph, for walking a private area
+  /// backwards from a destination inside it.
+  Iterable<int> accessOnlyInto(int v) => _accessOnlyIn[v] ?? const <int>[];
+
+  /// The cheapest access-only edge from [u] to [v], or -1.
+  ///
+  /// Distinct from [bestEdgeBetween], which would happily return a public
+  /// edge running between the same pair — fine for a route, wrong for
+  /// measuring a walk that is meant to stay inside a private area.
+  int accessOnlyEdgeBetween(int u, int v) {
+    final g = graph;
+    var best = -1;
+    var bestTime = double.infinity;
+    for (var e = g.adjOffset[u]; e < g.adjOffset[u + 1]; e++) {
+      if (g.adjTarget[e] != v || !g.isAccessOnly(e)) continue;
+      if (g.adjTime[e] < bestTime) {
+        bestTime = g.adjTime[e];
+        best = e;
+      }
+    }
+    return best;
+  }
 
   /// Vertices from which this query may still *leave* along an access-only
   /// edge — the run at the start of the route.

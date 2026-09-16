@@ -84,10 +84,23 @@
   whether a driveway may be used depends on where the route starts and ends,
   which is not known until someone asks.
 
-- **`ContractionHierarchyRouter` falls back to the plain search** on a graph
-  with access-only edges, for a sharper reason than the clock: a hierarchy is
-  built before anyone asks, and a shortcut spanning a parking aisle would
-  carry it into every query. `AStarRouter` and `DijkstraRouter` are unaffected.
+- **`ContractionHierarchyRouter` keeps its hierarchy.** Access-only edges are
+  left out of it entirely, which is exact rather than a compromise: in the
+  *middle* of a route such an edge is never usable, whoever is asking, so a
+  hierarchy over the public network answers the middle exactly. Leaving them
+  in would have been unsound, not merely wasteful — contraction hides edges
+  inside shortcuts, and a shortcut spanning a parking aisle would be carried
+  into every query where no check could see it.
+
+  The ends are a different question, so the query walks the private area
+  around the source and around the destination separately — a handful of edges
+  each — seeds the bidirectional search from every junction where those areas
+  meet the public network, and stitches the three pieces back together. A
+  route wholly inside one private area, two flats in the same condominium,
+  never touches the hierarchy at all.
+
+  A clocked query still falls back to the plain search, as it did before: the
+  backward half of a bidirectional search has no clock to evaluate against.
 
 ## 1.3.0
 
