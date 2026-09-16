@@ -317,7 +317,21 @@ class ContractionHierarchyRouter extends GraphRouteFinder {
   }
 
   @override
-  RawPath search(int source, int target) {
+  RawPath search(int source, int target, {DateTime? at}) {
+    // A clocked query cannot use the hierarchy.
+    //
+    // It was built with conditional edges removed, which is exactly right for
+    // the unclocked case — with no clock every condition applies, so those
+    // edges are closed to every query the hierarchy will answer. But it leaves
+    // no way to *re-admit* an edge a clock says is open: the edge is not in
+    // the hierarchy to be found, and the backward search has no clock to
+    // evaluate one against even if it were.
+    //
+    // So a clocked query runs over the graph itself. `avoidTolls` already
+    // takes the same way out, for the same underlying reason: baked shortcuts
+    // cannot be re-weighted after the fact.
+    if (at != null) return searchOverGraph(source, target, at);
+
     final n = graph.nodeCount;
     final distF = Float64List(n)..fillRange(0, n, double.infinity);
     final distB = Float64List(n)..fillRange(0, n, double.infinity);

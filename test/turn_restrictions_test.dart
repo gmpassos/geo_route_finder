@@ -670,6 +670,87 @@ void main() {
       );
     });
 
+    test('a clock reopens a turn outside its window', () async {
+      // The point of carrying the expression rather than resolving it at build
+      // time: one graph answers both states.
+      final storage = MemoryStorage();
+      await storage.saveGraph(
+        'r',
+        crossroads(
+          restriction: 'no',
+          condition: 'no_left_turn @ (Mo-Fr 07:00-09:00)',
+        ),
+      );
+
+      final free = MemoryStorage();
+      await free.saveGraph('f', crossroads());
+
+      const from = GeoCoordinate(lat: -23.500, lon: -46.700);
+      const to = GeoCoordinate(lat: -23.510, lon: -46.680);
+
+      final direct = await DijkstraRouter(
+        storage: free,
+        graphId: 'f',
+      ).findRoute(from, to);
+
+      final router = DijkstraRouter(storage: storage, graphId: 'r');
+
+      // Monday 08:00 — inside the window, so the detour stands.
+      final restricted = await router.findRoute(
+        from,
+        to,
+        at: DateTime(2026, 9, 14, 8),
+      );
+      expect(restricted.distanceMeters, greaterThan(direct.distanceMeters));
+
+      // Sunday 08:00 — outside it, so the direct turn is legal again.
+      final open = await router.findRoute(
+        from,
+        to,
+        at: DateTime(2026, 9, 13, 8),
+      );
+      expect(
+        open.distanceMeters,
+        closeTo(direct.distanceMeters, 0.001),
+        reason: 'outside its window the turn is simply allowed',
+      );
+    });
+
+    test('every router agrees once a clock is supplied', () async {
+      // CH cannot use its hierarchy for a clocked query — it was built with
+      // conditional edges removed — so it falls back. The three must still
+      // return the same answer, or the fallback is not equivalent.
+      final storage = MemoryStorage();
+      await storage.saveGraph(
+        'r',
+        crossroads(
+          restriction: 'no',
+          condition: 'no_left_turn @ (Mo-Fr 07:00-09:00)',
+        ),
+      );
+
+      const from = GeoCoordinate(lat: -23.500, lon: -46.700);
+      const to = GeoCoordinate(lat: -23.510, lon: -46.680);
+      final sunday = DateTime(2026, 9, 13, 8);
+
+      final distances = <String, double>{};
+      for (final entry in <String, RouteFinder>{
+        'dijkstra': DijkstraRouter(storage: storage, graphId: 'r'),
+        'astar': AStarRouter(storage: storage, graphId: 'r'),
+        'ch': ContractionHierarchyRouter(storage: storage, graphId: 'r'),
+      }.entries) {
+        final route = await entry.value.findRoute(from, to, at: sunday);
+        expect(route.found, isTrue, reason: entry.key);
+        distances[entry.key] = route.distanceMeters;
+      }
+
+      expect(
+        distances.values.map((d) => d.round()).toSet(),
+        hasLength(1),
+        reason: 'routers disagree with a clock: $distances',
+      );
+    });
+
     test('copies stay out of the spatial index', () async {
       // They sit at the junction's exact coordinate. Snapping to one would
       // start a route already committed to an approach it never made.
