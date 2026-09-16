@@ -68,6 +68,44 @@ class GeoTurnRestriction {
       '${condition == null ? '' : ' @ $condition'})';
 }
 
+/// A road no vehicle may legally enter.
+///
+/// Every approach to the junction is governed by a restriction, and none of
+/// them permits this way out — so no through route can take it, and the only
+/// journeys that use it are ones starting on the junction itself.
+///
+/// Named by OSM node ids rather than by way, because ids are what survives into
+/// the graph, and because the pair is what someone needs to find the place in
+/// an editor: [viaNodeId] is the junction, [toNodeId] the first node along the
+/// exit nothing may reach.
+///
+/// **A clipped extract produces false positives.** Approaches outside the box
+/// are absent, so a junction can look wholly restricted when it is not. That is
+/// acceptable for something whose only effect is a line in a build report, and
+/// it is the reason this is reported rather than repaired — overriding the
+/// source would mean inventing a movement no sign allows.
+class OrphanedExit {
+  /// The junction, as an OSM node id.
+  final int viaNodeId;
+
+  /// The first node along the unreachable exit, as an OSM node id.
+  final int toNodeId;
+
+  const OrphanedExit({required this.viaNodeId, required this.toNodeId});
+
+  @override
+  bool operator ==(Object other) =>
+      other is OrphanedExit &&
+      other.viaNodeId == viaNodeId &&
+      other.toNodeId == toNodeId;
+
+  @override
+  int get hashCode => Object.hash(viaNodeId, toNodeId);
+
+  @override
+  String toString() => 'node $viaNodeId has no permitted entry to $toNodeId';
+}
+
 /// Why turn restrictions were dropped while reading an extract.
 ///
 /// Every counter here is a restriction that exists in the source and is *not*
@@ -103,6 +141,18 @@ class TurnRestrictionStats {
   /// Distinct `restriction:conditional` expressions kept.
   final int conditions;
 
+  /// Roads that ended up with no permitted entry at all.
+  ///
+  /// The odd one out here, and deliberately so: these restrictions *were*
+  /// honoured. Between them they leave a way that no through route can enter,
+  /// which is a legitimate thing to map — a service road reached only from a
+  /// forecourt — and far more often a mistake, an `only_*` written where a
+  /// `no_*` was meant. It sits beside the skipped counters because it belongs
+  /// to the same question: what in this extract should someone look at.
+  ///
+  /// See [OrphanedExit] for the caveat about clipped extracts.
+  final List<OrphanedExit> orphanedExits;
+
   const TurnRestrictionStats({
     this.accepted = 0,
     this.skippedViaWay = 0,
@@ -111,6 +161,7 @@ class TurnRestrictionStats {
     this.contradictory = 0,
     this.excepted = 0,
     this.conditions = 0,
+    this.orphanedExits = const [],
   });
 
   /// Restrictions seen in the source and not honoured.
@@ -126,5 +177,7 @@ class TurnRestrictionStats {
       'TurnRestrictionStats($accepted accepted, $skipped skipped: '
       '$skippedViaWay via-way, $unresolvedMember unresolved, '
       '$ambiguousMember ambiguous, $contradictory contradictory, '
-      '$excepted excepted; $conditions conditional)';
+      '$excepted excepted; $conditions conditional'
+      '${orphanedExits.isEmpty ? '' : '; '
+                '${orphanedExits.length} orphaned exits'})';
 }

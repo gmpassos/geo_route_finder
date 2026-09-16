@@ -1,3 +1,29 @@
+## 1.5.0
+
+- **Report roads that turn restrictions leave with no way in.** A restriction
+  removes a movement; between them, several can remove a *road*. When every
+  approach to a junction is restricted and none of the restrictions names a
+  particular exit, nothing can enter that exit — no through route, only a
+  journey starting on the junction itself.
+
+  The graph is right to refuse it, which is exactly why it is worth surfacing:
+  a signed movement being unavailable is ordinary, a carriageway no vehicle may
+  enter is nearly always a mapping mistake. The classic shape is an `only_*`
+  written where a `no_*` was meant, because `only_*` forbids everything it does
+  not name — so one relation on the last unrestricted approach can sever a road
+  that every other tag on it says runs straight through. Until now the only
+  symptom was a route quietly taking a detour.
+
+  `TurnRestrictionSplitStats` and `TurnRestrictionStats` gain `orphanedExits`,
+  a list of `OrphanedExit(viaNodeId, toNodeId)` naming the junction and the
+  road nothing may reach.
+
+  This reports, it does not repair. Overriding the source would mean inventing
+  a movement no sign allows, which is the failure this package exists to
+  prevent. Note also that a clipped extract produces false positives:
+  approaches outside the box are absent, so a junction can look wholly
+  restricted when it is not.
+
 ## 1.4.1
 
 - **A restricted junction could not be delivered to.** Splitting a junction
