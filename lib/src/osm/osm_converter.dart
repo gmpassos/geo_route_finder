@@ -298,10 +298,14 @@ class OsmConverter {
 
       // Each value is judged on its own, so a relation whose permanent tag is
       // unreadable still contributes its timed one, and the other way round.
-      final unconditionalIsBan = unconditional != null && _isBan(unconditional);
-      final conditionalIsBan = conditional != null && _isBan(conditional);
+      final unconditionalKind = unconditional == null
+          ? null
+          : _banKind(unconditional);
+      final conditionalKind = conditional == null
+          ? null
+          : _banKind(conditional);
 
-      if (!unconditionalIsBan && !conditionalIsBan) {
+      if (unconditionalKind == null && conditionalKind == null) {
         unresolvedMember++;
         continue;
       }
@@ -341,18 +345,18 @@ class OsmConverter {
       // One record per sign. A relation carrying both tags is two signs at one
       // junction — an always-on ban and a timed one — and emitting a single
       // record would make the permanent one expire with the timetable.
-      if (unconditionalIsBan) {
+      if (unconditionalKind != null) {
         out.add(
           GeoTurnRestriction(
             fromNodeId: from,
             viaNodeId: viaNodeId,
             toNodeId: to,
-            isOnly: unconditional.trimLeft().startsWith('only'),
+            isOnly: unconditionalKind,
           ),
         );
       }
 
-      if (conditionalIsBan) {
+      if (conditional != null && conditionalKind != null) {
         conditions.add(conditional);
         out.add(
           GeoTurnRestriction(
@@ -361,7 +365,7 @@ class OsmConverter {
             toNodeId: to,
             // Read from its own tag rather than inherited: the two signs need
             // not agree about which movement they forbid.
-            isOnly: conditional.trimLeft().startsWith('only'),
+            isOnly: conditionalKind,
             condition: conditional,
           ),
         );
@@ -380,15 +384,65 @@ class OsmConverter {
     return out;
   }
 
-  /// Whether a `restriction` value names a movement this converter understands.
+  /// The movements an OSM turn restriction can name.
   ///
-  /// The vocabulary is `no_*` and `only_*`; anything else — a mistyped value, a
-  /// free-text note, a proposal nobody implemented — is left alone rather than
-  /// guessed at, because the two prefixes mean opposite things and picking
-  /// wrong forbids exactly what the sign permits.
-  static bool _isBan(String value) {
-    final trimmed = value.trimLeft();
-    return trimmed.startsWith('only') || trimmed.startsWith('no');
+  /// A closed set on purpose. The prefix alone is not enough to tell a turn
+  /// restriction from something else that happens to start the same way:
+  /// `no parking` on a `type=restriction` relation begins with `no`, and
+  /// reading it as a ban removes a movement the sign never mentioned. The
+  /// prefix says *which direction* a value points; the movement is what says
+  /// it is about turning at all.
+  static const _restrictionMovements = {
+    'left_turn',
+    'right_turn',
+    'straight_on',
+    'u_turn',
+    'entry',
+    'exit',
+  };
+
+  /// Whether a `restriction` value is an `only_*` ban, or null when the value
+  /// is not one this converter can read.
+  ///
+  /// Null is not "no restriction" — it is *counted* as unresolved, so a value
+  /// nobody anticipated shows up in the build report rather than being guessed
+  /// at in either direction. `no_*` and `only_*` mean opposite things, and a
+  /// wrong guess forbids precisely what the sign permits.
+  ///
+  /// Lenient about separators and case, because this is hand-edited data and
+  /// `No Left Turn` is the same sign as `no_left_turn`; strict about the
+  /// vocabulary, because that is what distinguishes a turn restriction from a
+  /// mis-tagged relation. The movement itself is then discarded: which turn is
+  /// forbidden comes from the relation's `from`/`via`/`to` members, which is
+  /// the only place it is stated unambiguously.
+  static bool? _banKind(String value) {
+    // A conditional value carries its timetable after an `@`, and a value can
+    // list several bans with `;`. Both are stripped down to the movements.
+    final head = value.split('@').first;
+
+    bool? kind;
+    for (final part in head.split(';')) {
+      final normalized = part.trim().toLowerCase().replaceAll(
+        RegExp(r'[\s\-]+'),
+        '_',
+      );
+
+      for (final entry in const {'no_': false, 'only_': true}.entries) {
+        if (!normalized.startsWith(entry.key)) continue;
+        if (!_restrictionMovements.contains(
+          normalized.substring(entry.key.length),
+        )) {
+          continue;
+        }
+
+        // A value that bans one movement and mandates another cannot be the
+        // single record this returns, and choosing either half would state
+        // something the source did not.
+        if (kind != null && kind != entry.value) return null;
+        kind = entry.value;
+      }
+    }
+    return kind;
   }
 
   /// Sentinel: the member names a way this graph does not carry.

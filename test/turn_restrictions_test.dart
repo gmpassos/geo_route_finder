@@ -199,35 +199,93 @@ void main() {
       expect(graph.turnRestrictions.single.isConditional, isTrue);
     });
 
-    test('a value that names no movement is not guessed at', () async {
-      // Both tags present, neither readable. The vocabulary is `no_*` and
-      // `only_*`, and they mean opposite things — a value outside it cannot be
-      // leaned one way or the other, so the relation is counted and dropped.
-      //
-      // The prefix test is deliberately loose: anything starting `no` or
-      // `only` counts, so a mistyped `no left turn` is still honoured. That
-      // errs toward keeping a restriction on, which is the direction every
-      // decision here leans. These two values start with neither.
+    /// Reads one relation and reports what the converter made of it.
+    Future<(GeoGraph, TurnRestrictionStats)> readOne(
+      Map<String, String> tags,
+    ) async {
       final converter = OsmConverter();
-      final path = writeTempPbf(
-        _junction(
-          restriction: const {
-            'type': 'restriction',
-            'restriction': 'left_turn_prohibited',
-            'restriction:conditional': 'weekend_ban @ (Sa,Su)',
-          },
-        ),
-      );
+      final path = writeTempPbf(_junction(restriction: tags));
 
       try {
         final graph = await converter.toGeoGraph(path);
-        expect(graph.turnRestrictions, isEmpty);
+        return (graph, converter.lastRestrictionStats!);
       } finally {
         File(path).parent.deleteSync(recursive: true);
       }
+    }
 
-      expect(converter.lastRestrictionStats!.accepted, isZero);
-      expect(converter.lastRestrictionStats!.unresolvedMember, equals(1));
+    test('a value that names no movement is not guessed at', () async {
+      // Both tags present, neither readable. The vocabulary is `no_*` and
+      // `only_*` over a closed set of movements, and the two prefixes mean
+      // opposite things — a value outside it cannot be leaned either way, so
+      // the relation is counted and dropped.
+      final (graph, stats) = await readOne(const {
+        'type': 'restriction',
+        'restriction': 'left_turn_prohibited',
+        'restriction:conditional': 'weekend_ban @ (Sa,Su)',
+      });
+
+      expect(graph.turnRestrictions, isEmpty);
+      expect(stats.accepted, isZero);
+      expect(stats.unresolvedMember, equals(1));
+    });
+
+    test('`no parking` is not a turn restriction', () async {
+      // It starts with `no`, which the prefix alone cannot tell from a ban —
+      // and reading it as one removes a movement the sign never mentioned,
+      // sending a rider the long way round a junction they could have turned
+      // at. What settles it is that `parking` is not a movement.
+      final (graph, stats) = await readOne(const {
+        'type': 'restriction',
+        'restriction': 'no parking',
+      });
+
+      expect(graph.turnRestrictions, isEmpty);
+      expect(
+        stats.unresolvedMember,
+        equals(1),
+        reason: 'counted, so a mis-tagged relation is visible in the build',
+      );
+    });
+
+    test('separators and case are forgiven, vocabulary is not', () async {
+      // The strictness is about the *movement*, not the spelling. This is
+      // hand-edited data and `No Left Turn` is the same sign as
+      // `no_left_turn`, so rejecting it would drop a real ban over a space.
+      final (graph, stats) = await readOne(const {
+        'type': 'restriction',
+        'restriction': 'No Left Turn',
+      });
+
+      expect(graph.turnRestrictions, hasLength(1));
+      expect(graph.turnRestrictions.single.isOnly, isFalse);
+      expect(stats.accepted, equals(1));
+    });
+
+    test('a value listing several bans is still one ban', () async {
+      // `no_left_turn;no_u_turn` is one relation forbidding two movements, and
+      // which turn it means comes from the members either way — the value only
+      // has to say `no` rather than `only`.
+      final (graph, _) = await readOne(const {
+        'type': 'restriction',
+        'restriction': 'no_left_turn;no_u_turn',
+      });
+
+      expect(graph.turnRestrictions, hasLength(1));
+      expect(graph.turnRestrictions.single.isOnly, isFalse);
+    });
+
+    test('a value that both bans and mandates is refused', () async {
+      // One record cannot be an `only_*` and a `no_*` at once, and choosing
+      // either half states something the source did not: `only_straight_on`
+      // removes every other exit, `no_left_turn` removes one.
+      final (graph, stats) = await readOne(const {
+        'type': 'restriction',
+        'restriction': 'no_left_turn;only_straight_on',
+      });
+
+      expect(graph.turnRestrictions, isEmpty);
+      expect(stats.unresolvedMember, equals(1));
     });
 
     test('convert carries restrictions into a plain storage too', () async {
@@ -1480,6 +1538,28 @@ void main() {
             'counted in restrictions, so the report adds up against what '
             'was read — not in approaches, which would say 1 for both signs',
       );
+    });
+
+    test('the split counts describe themselves', () async {
+      // This string is the whole interface to the split for whoever runs a
+      // build: the loss is invisible by construction — a forbidden turn is an
+      // edge that is not there — so a mislabelled count is a number read as
+      // the wrong thing entirely. `applied` and `copies` are especially easy
+      // to swap, and they are not the same unit.
+      const stats = TurnRestrictionSplitStats(
+        applied: 7,
+        unresolved: 1,
+        contradictory: 2,
+        inert: 3,
+        copies: 5,
+      );
+
+      final text = stats.toString();
+      expect(text, contains('7 applied'));
+      expect(text, contains('5 copies'));
+      expect(text, contains('1 unresolved'));
+      expect(text, contains('2 contradictory'));
+      expect(text, contains('3 inert'));
     });
 
     test('a restriction naming an exit the junction lacks is inert', () async {
