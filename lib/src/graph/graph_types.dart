@@ -66,6 +66,43 @@ class RoutingGraph {
   /// CSR row pointers into [geomCoords], length `edgeCount + 1`, in points.
   final Int32List geomOffset;
 
+  /// For each vertex, the junction it is a restricted copy of, or `-1`.
+  ///
+  /// **A turn restriction is topology here, not a rule checked during
+  /// search.** A junction with a forbidden movement is split: the approach
+  /// that may not turn is retargeted to a copy of the junction which simply
+  /// has no edge for the forbidden exit. Nothing in Dijkstra, A* or the
+  /// contraction hierarchy needs to know — an illegal turn is not expensive,
+  /// it is absent — and a CH shortcut cannot bake in a movement the graph
+  /// never contained.
+  ///
+  /// Copies share their parent's coordinate and [originalId], and are kept out
+  /// of the spatial index: they are the *same place*, and snapping to one
+  /// would start a route already committed to an approach it never made.
+  ///
+  /// Null when the graph carries no restrictions, which is the common case and
+  /// costs nothing.
+  final Int32List? splitParent;
+
+  /// For each directed edge, the condition that forbids it, or `0`.
+  ///
+  /// Non-zero is a 1-based index into [conditions]. A conditional restriction
+  /// cannot be topology — one graph has to answer both "restricted now" and
+  /// "not restricted now" — so the edge stays and carries a flag instead.
+  ///
+  /// **One byte per edge is exact only because of the split.** The movement is
+  /// already isolated onto a copy of the junction, so "this edge, from this
+  /// approach" is fully determined by the edge alone. Without the split this
+  /// would have to be keyed by edge *pairs*, and the search would need a state
+  /// per incoming edge.
+  final Uint8List? adjCond;
+
+  /// The distinct `restriction:conditional` expressions [adjCond] indexes.
+  ///
+  /// Kept as written, because they are evaluated against the clock a query
+  /// supplies rather than resolved at build time.
+  final List<String> conditions;
+
   RoutingGraph({
     required this.lat,
     required this.lon,
@@ -78,7 +115,19 @@ class RoutingGraph {
     required this.adjSignal,
     required this.geomCoords,
     required this.geomOffset,
+    this.splitParent,
+    this.adjCond,
+    this.conditions = const [],
   });
+
+  /// Whether vertex [v] is a restricted copy rather than a real junction.
+  bool isSplitCopy(int v) => (splitParent?[v] ?? -1) >= 0;
+
+  /// The condition forbidding edge [e], or null when it is unconditional.
+  String? conditionOf(int e) {
+    final index = adjCond?[e] ?? 0;
+    return index == 0 ? null : conditions[index - 1];
+  }
 
   int get nodeCount => lat.length;
   int get edgeCount => adjTarget.length;

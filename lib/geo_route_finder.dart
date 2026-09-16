@@ -59,6 +59,7 @@ export 'src/osm/vehicle_profile.dart';
 export 'src/graph/graph_types.dart';
 export 'src/graph/graph_builder.dart';
 export 'src/graph/graph_compressor.dart';
+export 'src/graph/turn_restriction_splitter.dart';
 
 // Spatial index.
 export 'src/spatial/kd_tree.dart';

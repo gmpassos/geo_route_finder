@@ -132,9 +132,28 @@ class GraphCompressor {
     }
 
     // --- Classify pass-through vertices. ---
+    //
+    // A junction that has been split for a turn restriction is pinned, along
+    // with every copy of it, and both halves of that matter.
+    //
+    // The parent, because retargeting an approach onto a copy *lowers the
+    // junction's in-degree*: a crossroads that was (2,2) can become (1,1) and
+    // be contracted away, taking with it the vertex every copy's
+    // `splitParent` points at and the place a route would snap to.
+    //
+    // A copy carrying a condition, because the query-time check reads
+    // `adjCond` on an edge leaving it — and a contracted vertex is one a
+    // shortcut can span, which would hide the very edge the check is for.
+    // A copy with no condition is free to collapse, and usually does: an
+    // `only_*` copy has one way in and one way out, so the chain walk merges
+    // approach and exit into a single edge that says "arriving this way, you
+    // continue that way" — the restriction, at no cost in vertices.
+    final pinned = _pinnedVertices(g);
+
     final contractible = List<bool>.filled(n, false);
     for (var v = 0; v < n; v++) {
       if (!keepVertex(v)) continue;
+      if (pinned[v]) continue;
       final outDeg = g.adjOffset[v + 1] - g.adjOffset[v];
       final inDeg = revOffset[v + 1] - revOffset[v];
       if (outDeg == 2 && inDeg == 2) {
@@ -176,6 +195,7 @@ class GraphCompressor {
         var time = g.adjTime[e];
         var tolls = g.adjToll[e];
         var signals = g.adjSignal[e];
+        final condition = g.conditionOf(e);
         final geom = <GeoCoordinate>[...g.geometryOf(e)];
 
         while (contractible[cur] && cur != a) {
@@ -192,7 +212,30 @@ class GraphCompressor {
         }
 
         if (cur == a) continue; // drop self-loops
-        merged.add(_MergedEdge(a, cur, dist, time, tolls, signals, geom));
+
+        // The condition of the chain's *first* edge, and only that one.
+        //
+        // A vertex with a conditional edge leaving it is pinned above, so it
+        // is never contractible, so a chain can never continue *through* one —
+        // which means no interior edge of a merge can be conditional, and the
+        // first edge is the whole story. The assert states the invariant the
+        // pinning creates rather than trusting it silently.
+        assert(() {
+          var p = a;
+          var c = g.adjTarget[e];
+          while (contractible[c] && c != a) {
+            final next = findOut(c, p);
+            if (next < 0) break;
+            if ((g.adjCond?[next] ?? 0) != 0) return false;
+            p = c;
+            c = g.adjTarget[next];
+          }
+          return true;
+        }(), 'a conditional edge was swallowed into the middle of a chain');
+
+        merged.add(
+          _MergedEdge(a, cur, dist, time, tolls, signals, geom, condition),
+        );
       }
     }
 
@@ -218,7 +261,19 @@ class GraphCompressor {
       keptOld.add(m.target);
     }
     final sorted = keptOld.toList()
-      ..sort((a, b) => g.originalId[a].compareTo(g.originalId[b]));
+      // Tie-broken on the old index, and not optionally. Split copies share
+      // their parent's `originalId`, and `List.sort` is **not stable** in
+      // Dart — so without this the renumbering of an equal-id run is
+      // arbitrary, and two compilations of the same input can produce
+      // different bytes. That would break the package's byte-identical-output
+      // guarantee and every checksum built on it.
+      //
+      // It also earns something: the splitter appends copies after their
+      // parent, so the lowest old index in a run is always the real junction.
+      ..sort((a, b) {
+        final byId = g.originalId[a].compareTo(g.originalId[b]);
+        return byId != 0 ? byId : a.compareTo(b);
+      });
     final remap = <int, int>{};
     for (var i = 0; i < sorted.length; i++) {
       remap[sorted[i]] = i;
@@ -233,6 +288,20 @@ class GraphCompressor {
       lat[i] = g.lat[old];
       lon[i] = g.lon[old];
       originalId[i] = g.originalId[old];
+    }
+
+    // Remapped through the renumbering, and it can only be done here because
+    // `remap` exists only here. Parents are pinned above, so every copy that
+    // survives has a parent that survives with it — a `splitParent` pointing
+    // at a vertex the compressor removed would be worse than none at all.
+    final oldSplitParent = g.splitParent;
+    Int32List? splitParent;
+    if (oldSplitParent != null) {
+      splitParent = Int32List(n)..fillRange(0, n, -1);
+      for (var i = 0; i < n; i++) {
+        final parent = oldSplitParent[sorted[i]];
+        if (parent >= 0) splitParent[i] = remap[parent] ?? -1;
+      }
     }
 
     for (final m in merged) {
@@ -259,10 +328,20 @@ class GraphCompressor {
     final adjDist = Float64List(em);
     final adjToll = Uint8List(em);
     final adjSignal = Uint8List(em);
+    final adjCond = Uint8List(em);
+    final conditions = <String>[];
     final geomOffset = Int32List(em + 1);
     final geomBuilder = <double>[];
     for (var i = 0; i < em; i++) {
       final m = merged[i];
+
+      final condition = m.condition;
+      if (condition != null) {
+        final at = conditions.indexOf(condition);
+        adjCond[i] =
+            (at >= 0 ? at : (conditions..add(condition)).length - 1) + 1;
+      }
+
       adjTarget[i] = m.newTarget;
       adjTime[i] = m.time;
       adjDist[i] = m.dist;
@@ -291,7 +370,47 @@ class GraphCompressor {
       adjSignal: adjSignal,
       geomCoords: Float64List.fromList(geomBuilder),
       geomOffset: geomOffset,
+      splitParent: splitParent,
+      adjCond: conditions.isEmpty ? null : adjCond,
+      conditions: conditions,
     );
+  }
+
+  /// Vertices the chain compressor must not contract.
+  ///
+  /// Derived rather than stored, in O(n + m), because both reasons are already
+  /// visible in the graph — see the call site for why each one matters.
+  static List<bool> _pinnedVertices(RoutingGraph g) {
+    final pinned = List<bool>.filled(g.nodeCount, false);
+
+    final splitParent = g.splitParent;
+    if (splitParent == null) return pinned;
+
+    final adjCond = g.adjCond;
+
+    for (var v = 0; v < g.nodeCount; v++) {
+      final parent = splitParent[v];
+      if (parent < 0) continue;
+
+      // The junction itself: retargeting an approach onto a copy lowers its
+      // in-degree, and a crossroads that drops to degree 2 would otherwise be
+      // contracted out from under every copy that points at it.
+      pinned[parent] = true;
+
+      if (adjCond == null) continue;
+
+      // A copy whose exits carry a condition, because the query-time check
+      // reads `adjCond` on an edge leaving it. A copy with no condition may
+      // collapse freely, and usually does.
+      for (var e = g.adjOffset[v]; e < g.adjOffset[v + 1]; e++) {
+        if (adjCond[e] != 0) {
+          pinned[v] = true;
+          break;
+        }
+      }
+    }
+
+    return pinned;
   }
 
   static bool _setEquals(Set<int> a, Set<int> b) {
@@ -321,6 +440,14 @@ class _MergedEdge {
   final int signals;
 
   final List<GeoCoordinate> geometry;
+
+  /// The condition forbidding this movement, or null.
+  ///
+  /// Taken from the chain's first edge, which is the only one that can carry
+  /// one — a vertex with a conditional edge leaving it is pinned, so a chain
+  /// never passes through it.
+  final String? condition;
+
   int newSource = 0;
   int newTarget = 0;
   _MergedEdge(
@@ -331,5 +458,6 @@ class _MergedEdge {
     this.tolls,
     this.signals,
     this.geometry,
+    this.condition,
   );
 }

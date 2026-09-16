@@ -59,16 +59,29 @@ class KdTree {
     return out;
   }
 
-  /// Builds a balanced KD-tree over every vertex of [g].
+  /// Builds a balanced KD-tree over the vertices a route may snap to.
+  ///
+  /// **Split copies are excluded.** A junction split for a turn restriction
+  /// carries copies at the identical coordinate, and snapping to one would
+  /// start a route already committed to an approach it never made — or, as a
+  /// destination, make the junction reachable only from that one arm. They are
+  /// the same place; only the parent is a place you can *be*.
+  ///
+  /// The index is therefore a subset of the vertices, which the format already
+  /// allows: the serializer writes `order.length` rather than assuming the
+  /// vertex count.
   factory KdTree.build(RoutingGraph g) {
-    final n = g.nodeCount;
-    final order = Int32List(n);
-    for (var i = 0; i < n; i++) {
-      order[i] = i;
-    }
+    final splitParent = g.splitParent;
+
+    final order = Int32List.fromList([
+      for (var i = 0; i < g.nodeCount; i++)
+        if ((splitParent?[i] ?? -1) < 0) i,
+    ]);
+
+    final n = order.length;
     var sumLat = 0.0;
     for (var i = 0; i < n; i++) {
-      sumLat += g.lat[i];
+      sumLat += g.lat[order[i]];
     }
     final meanLat = n == 0 ? 0.0 : sumLat / n;
     final cosRef = math.cos(meanLat * math.pi / 180.0);
@@ -131,11 +144,14 @@ class KdTree {
 
   /// Finds the vertex nearest to (`lat`, `lon`).
   NearestResult findNearest(double lat, double lon) {
-    if (_g.nodeCount == 0) return NearestResult.none;
+    // `order.length`, not `nodeCount` — the index may deliberately cover fewer
+    // vertices than the graph has (see [KdTree.build]), and walking past its
+    // end is a `RangeError` rather than a wrong answer.
+    if (order.isEmpty) return NearestResult.none;
     final qx = lon * _mPerDeg * cosRef;
     final qy = lat * _mPerDeg;
     final best = _Best();
-    _nearest(0, _g.nodeCount, 0, qx, qy, best);
+    _nearest(0, order.length, 0, qx, qy, best);
     if (best.node < 0) return NearestResult.none;
     // Refine with an exact haversine distance for the winning vertex.
     final d = haversineMeters(lat, lon, _g.lat[best.node], _g.lon[best.node]);
@@ -175,11 +191,12 @@ class KdTree {
     double radiusMeters,
   ) {
     final out = <NearestResult>[];
-    if (_g.nodeCount == 0) return out;
+    // See [findNearest]: the index may cover fewer vertices than the graph.
+    if (order.isEmpty) return out;
     final qx = lon * _mPerDeg * cosRef;
     final qy = lat * _mPerDeg;
     final r2 = radiusMeters * radiusMeters;
-    _within(0, _g.nodeCount, 0, qx, qy, r2, out);
+    _within(0, order.length, 0, qx, qy, r2, out);
     out.sort((a, b) => a.distanceMeters.compareTo(b.distanceMeters));
     return out;
   }

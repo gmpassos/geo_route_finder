@@ -2,6 +2,7 @@ import 'package:geo_osm_pbf/geo_osm_pbf.dart';
 
 import '../graph/graph_builder.dart';
 import '../graph/graph_compressor.dart';
+import '../graph/turn_restriction_splitter.dart';
 import '../model/geo_edge.dart';
 import '../model/geo_graph.dart';
 import '../model/geo_turn_restriction.dart';
@@ -418,6 +419,16 @@ class OsmConverter {
   Future<CompiledGraph> compile(String inputFile) async {
     final geo = await toGeoGraph(inputFile);
     var routing = builder.build(geo);
+
+    // Between the builder and the compressor, and it has to be both. The
+    // builder resolves from/to to dense edge indices, which is the only
+    // unambiguous way to name an approach; the compressor then merges that
+    // approach into a chain and destroys its identity.
+    routing = const TurnRestrictionSplitter().split(
+      routing,
+      geo.turnRestrictions,
+    );
+
     if (compress) routing = compressor.compress(routing);
     final tree = KdTree.build(routing);
     final meta = GraphMeta(
