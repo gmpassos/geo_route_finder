@@ -7,6 +7,7 @@ import '../graph/graph_compressor.dart';
 import '../graph/graph_types.dart';
 import '../graph/turn_restriction_splitter.dart';
 import '../model/geo_route.dart';
+import '../osm/conditional_restriction.dart';
 import '../osm/vehicle_profile.dart';
 import '../spatial/kd_tree.dart';
 import '../spatial/nearest_node_search.dart';
@@ -24,10 +25,15 @@ abstract interface class RouteFinder {
   /// When [avoidTolls] is `true`, toll roads are strongly penalized so a
   /// toll-free route is preferred; a tolled route is still returned when the
   /// destination cannot be reached otherwise.
+  /// When [at] is given, conditional turn restrictions are evaluated against
+  /// it — so a turn barred only on weekday mornings is open on a Sunday. With
+  /// no clock every condition applies, which is the safe reading rather than
+  /// the convenient one.
   Future<GeoRoute> findRoute(
     GeoCoordinate start,
     GeoCoordinate end, {
     bool avoidTolls = false,
+    DateTime? at,
   });
 
   /// Computes the fastest route and, optionally, a number of *alternative*
@@ -54,6 +60,8 @@ abstract interface class RouteFinder {
   ///   genuinely distinct. `0.8` allows up to 80% shared length.
   /// * [avoidTolls] — when `true`, toll roads are strongly penalized so toll-free
   ///   routes are preferred; tolled segments are used only when unavoidable.
+  /// * [at] — the moment the journey begins, used to decide which conditional
+  ///   turn restrictions are in force. Omit it and every condition applies.
   Future<List<GeoRoute>> findRoutes(
     GeoCoordinate start,
     GeoCoordinate end, {
@@ -62,6 +70,7 @@ abstract interface class RouteFinder {
     double? maxExtraMeters,
     double maxSharing = 0.8,
     bool avoidTolls = false,
+    DateTime? at,
   });
 }
 
@@ -218,21 +227,43 @@ abstract class GraphRouteFinder implements RouteFinder {
     _aliases = byParent;
   }
 
-  /// Whether edge [e] is closed to this query.
+  /// Whether edge [e] is closed to a rider reaching it [secondsSoFar] into a
+  /// journey that began at [at].
   ///
-  /// Today this is "every conditional restriction applies", which is the
-  /// deliberate default: with no clock, a turn that is forbidden *sometimes*
-  /// is treated as forbidden. The alternative — assuming the permissive case —
-  /// would route a rider through a junction they may be barred from at exactly
-  /// the hour the restriction exists for, which is the wrong way to be wrong.
+  /// With no clock, every condition applies: a turn forbidden *sometimes* is
+  /// treated as forbidden. The permissive default would route a rider through
+  /// a junction they may be barred from at exactly the hour the restriction
+  /// exists for, on the strength of nobody having supplied a time.
   ///
-  /// A clock parameter will narrow this to the conditions actually in force at
-  /// the time the rider reaches the junction. The signature already takes the
-  /// seconds elapsed so that arrives without touching three relaxation loops
-  /// again.
-  bool isBlocked(int e, double secondsSoFar) {
+  /// With a clock, the condition is evaluated at **the moment the rider
+  /// arrives**, `at + secondsSoFar`, not at departure. A restriction that ends
+  /// at nine does not bind a rider who reaches the junction at five past.
+  ///
+  /// This is sound for Dijkstra without making the weights time-dependent:
+  /// `dist[u]` is final when `u` settles, so the predicate is asked once per
+  /// edge at a fixed instant, and those instants only increase along the
+  /// settle order.
+  ///
+  /// **Waiting is not modelled**, and that is a statement about the answer
+  /// rather than the algorithm. A turn barred until half past nine is treated
+  /// as barred for this query, and a longer path that would arrive after it
+  /// opens is never preferred on those grounds. That is the behaviour a rider
+  /// wants — nobody wants to be advised to idle at a junction for an hour —
+  /// but it is not the true time-dependent optimum, and it should not be
+  /// described as one.
+  bool isBlocked(int e, double secondsSoFar, DateTime? at) {
     final adjCond = graph.adjCond;
-    return adjCond != null && adjCond[e] != 0;
+    if (adjCond == null) return false;
+
+    final index = adjCond[e];
+    if (index == 0) return false;
+
+    if (at == null) return true;
+
+    return ConditionalRestriction.appliesAt(
+      graph.conditions[index - 1],
+      at.add(Duration(seconds: secondsSoFar.round())),
+    );
   }
 
   /// Every vertex that *is* [target], as far as a route is concerned.
@@ -253,16 +284,20 @@ abstract class GraphRouteFinder implements RouteFinder {
   }
 
   /// The cheapest path to [target] or any vertex standing in for it.
-  RawPath _searchToAny(int source, int target) {
+  RawPath _searchToAny(int source, int target, DateTime? at) {
     final targets = _targetsFor(target);
-    if (targets.length == 1) return search(source, targets.single);
+    if (targets.length == 1) return search(source, targets.single, at: at);
 
     RawPath? best;
     for (final t in targets) {
-      if (t == source) continue;
-      final path = search(source, t);
+      final path = search(source, t, at: at);
       if (!path.found) continue;
-      if (best == null || path.distanceMeters < best.distanceMeters) {
+      // By **time**, because that is what the search minimised and what
+      // `findRoute` promises. Choosing the shortest arrival instead can return
+      // a route several times slower than one the search already found, and
+      // only ever at a split junction — so it would be invisible everywhere
+      // except the case this loop exists for.
+      if (best == null || path.timeSeconds < best.timeSeconds) {
         best = path;
       }
     }
@@ -275,15 +310,20 @@ abstract class GraphRouteFinder implements RouteFinder {
 
   /// Core shortest-path computation between two vertices. Implemented by each
   /// algorithm. Must return [RawPath.none] when unreachable.
-  RawPath search(int source, int target);
+  ///
+  /// [at] is the moment the journey starts, or null. Passed explicitly rather
+  /// than held on the router, because a field would be shared state on an
+  /// object two concurrent queries can reach.
+  RawPath search(int source, int target, {DateTime? at});
 
   @override
   Future<GeoRoute> findRoute(
     GeoCoordinate start,
     GeoCoordinate end, {
     bool avoidTolls = false,
+    DateTime? at,
   }) async {
-    final routes = await findRoutes(start, end, avoidTolls: avoidTolls);
+    final routes = await findRoutes(start, end, avoidTolls: avoidTolls, at: at);
     return routes.isEmpty ? GeoRoute.none : routes.first;
   }
 
@@ -296,6 +336,7 @@ abstract class GraphRouteFinder implements RouteFinder {
     double? maxExtraMeters,
     double maxSharing = 0.8,
     bool avoidTolls = false,
+    DateTime? at,
   }) async {
     await ensureLoaded();
 
@@ -315,8 +356,8 @@ abstract class GraphRouteFinder implements RouteFinder {
     // shortcuts cannot be re-weighted). Otherwise use the router's own search().
     final basePenalty = avoidTolls ? _tollPenalty() : null;
     final best = basePenalty != null
-        ? _penalizedSearchToAny(s.node, t.node, basePenalty)
-        : _searchToAny(s.node, t.node);
+        ? _penalizedSearchToAny(s.node, t.node, basePenalty, at)
+        : _searchToAny(s.node, t.node, at);
     if (!best.found) return const [];
 
     if (maxRoutes <= 1) return [buildRoute(best)];
@@ -330,6 +371,7 @@ abstract class GraphRouteFinder implements RouteFinder {
       maxExtraMeters: maxExtraMeters,
       maxSharing: maxSharing,
       basePenalty: basePenalty,
+      at: at,
     );
     return paths.map(buildRoute).toList();
   }
@@ -370,6 +412,7 @@ abstract class GraphRouteFinder implements RouteFinder {
     required double? maxExtraMeters,
     required double maxSharing,
     Float64List? basePenalty,
+    DateTime? at,
   }) {
     final g = graph;
     final accepted = <RawPath>[best];
@@ -392,7 +435,7 @@ abstract class GraphRouteFinder implements RouteFinder {
     var attempts = 0;
     while (accepted.length < maxRoutes && attempts < maxAttempts) {
       attempts++;
-      final cand = _penalizedSearchToAny(source, target, penalty);
+      final cand = _penalizedSearchToAny(source, target, penalty, at);
       if (!cand.found) break;
       if (cand.distanceMeters > maxDist) break;
 
@@ -432,25 +475,64 @@ abstract class GraphRouteFinder implements RouteFinder {
   /// The alias loop belongs on this path too. `avoidTolls` bypasses `search`
   /// entirely, and so does every alternative route — so patching only the
   /// plain path would leave both unable to reach a restricted junction.
-  RawPath _penalizedSearchToAny(int source, int target, Float64List penalty) {
+  /// A plain Dijkstra over the loaded graph, ignoring any preprocessing.
+  ///
+  /// For a router whose preprocessing cannot answer a particular question.
+  /// `ContractionHierarchyRouter` uses it for a clocked query: its hierarchy
+  /// is built with conditional edges removed — correct for the unclocked case,
+  /// where every condition applies — so it has no way to *re-admit* an edge a
+  /// clock says is open. `avoidTolls` already takes the same way out, for the
+  /// same reason: baked shortcuts cannot be re-weighted.
+  RawPath searchOverGraph(int source, int target, DateTime? at) =>
+      _penalizedSearch(
+        source,
+        target,
+        Float64List(graph.edgeCount)..fillRange(0, graph.edgeCount, 1.0),
+        at,
+      );
+
+  RawPath _penalizedSearchToAny(
+    int source,
+    int target,
+    Float64List penalty,
+    DateTime? at,
+  ) {
     final targets = _targetsFor(target);
     if (targets.length == 1) {
-      return _penalizedSearch(source, targets.single, penalty);
+      return _penalizedSearch(source, targets.single, penalty, at);
     }
 
     RawPath? best;
+    var bestCost = double.infinity;
+
     for (final t in targets) {
-      if (t == source) continue;
-      final path = _penalizedSearch(source, t, penalty);
+      final path = _penalizedSearch(source, t, penalty, at);
       if (!path.found) continue;
-      if (best == null || path.distanceMeters < best.distanceMeters) {
+
+      // Compared on the **penalized** cost, which is what this search
+      // minimised. Comparing on distance — or even on real time — throws away
+      // the 1e6 the toll penalty just spent saying "not this way", so a
+      // shorter tolled arrival would beat a longer toll-free one and
+      // `avoidTolls: true` would be defeated at the last step.
+      var cost = 0.0;
+      for (final e in path.edges) {
+        cost += graph.adjTime[e] * penalty[e];
+      }
+
+      if (cost < bestCost) {
+        bestCost = cost;
         best = path;
       }
     }
     return best ?? RawPath.none;
   }
 
-  RawPath _penalizedSearch(int source, int target, Float64List penalty) {
+  RawPath _penalizedSearch(
+    int source,
+    int target,
+    Float64List penalty,
+    DateTime? at,
+  ) {
     final g = graph;
     final n = g.nodeCount;
     final dist = Float64List(n)..fillRange(0, n, double.infinity);
@@ -478,7 +560,7 @@ abstract class GraphRouteFinder implements RouteFinder {
       for (var e = g.adjOffset[u]; e < g.adjOffset[u + 1]; e++) {
         final w = g.adjTime[e];
         if (w == double.infinity) continue;
-        if (isBlocked(e, realTime[u])) continue;
+        if (isBlocked(e, realTime[u], at)) continue;
         final v = g.adjTarget[e];
         final nd = d + w * penalty[e];
         if (nd < dist[v]) {

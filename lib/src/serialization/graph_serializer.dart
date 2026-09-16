@@ -74,11 +74,9 @@ class GraphSerializer {
     final splitParent = g.splitParent;
     final adjCond = g.adjCond;
 
-    // UTF-8, newline-separated, and inside the payload rather than beside it
-    // so the existing CRC covers the expressions too.
     final conditionBlob = adjCond == null
         ? Uint8List(0)
-        : Uint8List.fromList(utf8.encode(g.conditions.join('\n')));
+        : _encodeConditions(g.conditions);
 
     var flags = 0;
     if (splitParent != null) flags |= kGraphFlagHasSplitParent;
@@ -148,6 +146,36 @@ class GraphSerializer {
       off += conditionBlob.length;
     }
 
+    return out;
+  }
+
+  /// Encodes the condition table: a count, then each expression length-prefixed
+  /// in UTF-8. It lives inside the `.graph` payload rather than beside it, so
+  /// the existing CRC covers the expressions too.
+  ///
+  /// Length-prefixed rather than newline-separated, which is what this was.
+  /// A `restriction:conditional` value is free-form OSM text and nothing stops
+  /// one containing a newline; one that did would split into two entries and
+  /// shift every later index by one. The file stays self-consistent and the
+  /// CRC still passes, so nothing would report it — the only symptom is that
+  /// conditional turns past that point are judged against another junction's
+  /// timetable. The count lets the reader refuse a table it cannot trust, and
+  /// the lengths mean there is nothing left to mis-split.
+  static Uint8List _encodeConditions(List<String> conditions) {
+    final encoded = [for (final c in conditions) utf8.encode(c)];
+    final bytes = 4 + encoded.fold<int>(0, (sum, e) => sum + 4 + e.length);
+
+    final out = Uint8List(bytes);
+    final bd = ByteData.view(out.buffer);
+    bd.setInt32(0, conditions.length, Endian.little);
+
+    var off = 4;
+    for (final e in encoded) {
+      bd.setInt32(off, e.length, Endian.little);
+      off += 4;
+      out.setRange(off, off + e.length, e);
+      off += e.length;
+    }
     return out;
   }
 

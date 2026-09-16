@@ -97,6 +97,26 @@ class RoutingGraph {
   /// per incoming edge.
   final Uint8List? adjCond;
 
+  /// The highest condition index a byte can carry, reserved to mean "in force
+  /// whenever anyone asks".
+  ///
+  /// [adjCond] is one byte per edge, so a graph cannot distinguish more than
+  /// 255 conditions. Past that the index would wrap — silently, since a
+  /// wrapped value is still in range: one edge's condition would vanish
+  /// (the turn permanently open) and others would be evaluated against **some
+  /// other junction's timetable**. Both are wrong answers that no check would
+  /// catch.
+  ///
+  /// So the last slot is a sentinel instead. Everything beyond the cap maps to
+  /// it, and it holds an expression no parser can read — which
+  /// `ConditionalRestriction` treats as always in force. The overflow
+  /// therefore over-restricts, which is the same direction every other
+  /// decision here leans.
+  static const int conditionOverflowIndex = 255;
+
+  /// The sentinel expression [conditionOverflowIndex] points at.
+  static const String overflowCondition = 'restriction:unrepresentable';
+
   /// The distinct `restriction:conditional` expressions [adjCond] indexes.
   ///
   /// Kept as written, because they are evaluated against the clock a query
@@ -126,7 +146,19 @@ class RoutingGraph {
   /// The condition forbidding edge [e], or null when it is unconditional.
   String? conditionOf(int e) {
     final index = adjCond?[e] ?? 0;
-    return index == 0 ? null : conditions[index - 1];
+    if (index == 0) return null;
+
+    if (index > conditions.length) {
+      // Not reachable through either producer: the splitter allocates every
+      // index it writes, and the deserializer refuses a graph whose edges
+      // point past its table. Kept because this runs inside the relaxation
+      // loops, where throwing would abandon a whole search over one bad byte.
+      // An index with no expression behind it bans the turn outright, which is
+      // the reading that cannot hand back an illegal route.
+      assert(false, 'edge $e names condition $index of ${conditions.length}');
+      return overflowCondition;
+    }
+    return conditions[index - 1];
   }
 
   int get nodeCount => lat.length;

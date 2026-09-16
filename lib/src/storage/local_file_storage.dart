@@ -5,6 +5,8 @@ import 'package:geo_osm_pbf/geo_osm_pbf.dart';
 import 'package:path/path.dart' as p;
 
 import '../graph/graph_builder.dart';
+import '../graph/graph_types.dart';
+import '../graph/turn_restriction_splitter.dart';
 import '../model/geo_edge.dart';
 import '../model/geo_graph.dart';
 import '../osm/vehicle_profile.dart';
@@ -128,7 +130,19 @@ class LocalFileStorage implements CompiledGraphStorage {
     GeoGraph graph, {
     VehicleProfile profile = VehicleProfile.car,
   }) async {
-    final routing = const GraphBuilder().build(graph);
+    // Split before indexing, in the same order as `OsmConverter.compile`.
+    //
+    // Without this the whole feature is discarded here, quietly: the graph
+    // compiles with no split junctions, `loadCompiled` then takes the
+    // *compiled* branch of `ensureLoaded`, and the splitter never runs at any
+    // point. The inconsistency was visible in this very method — `GraphBuilder`
+    // reads `signalNodeIds`, so signals survived a save and restrictions did
+    // not.
+    final routing = const TurnRestrictionSplitter().split(
+      const GraphBuilder().build(graph),
+      graph.turnRestrictions,
+    );
+
     final tree = KdTree.build(routing);
     final meta = GraphMeta(
       formatVersion: kGraphFormatVersion,
@@ -154,6 +168,7 @@ class LocalFileStorage implements CompiledGraphStorage {
     final compiled = await loadCompiled(id, profile: profile);
     if (compiled == null) return null;
     final g = compiled.graph;
+    _refuseIfSplit(g, id);
     final nodes = <GeoNode>[
       for (var v = 0; v < g.nodeCount; v++)
         GeoNode(id: g.originalId[v], lat: g.lat[v], lon: g.lon[v]),
@@ -178,6 +193,27 @@ class LocalFileStorage implements CompiledGraphStorage {
       }
     }
     return GeoGraph(nodes: nodes, edges: edges);
+  }
+
+  /// Whether [g] can be represented as a plain [GeoGraph].
+  ///
+  /// It cannot once junctions have been split: copies share their parent's
+  /// `originalId`, and a `GeoGraph` is a list of nodes keyed by id, so the
+  /// copies collapse into their parents and every restriction the split
+  /// encoded is lost — along with the edges that distinguished them.
+  ///
+  /// Refusing loudly rather than returning the collapsed graph, because the
+  /// collapsed one routes perfectly well and is wrong: it offers exactly the
+  /// turns the signs forbid. `loadCompiled` is the right way to read one of
+  /// these, and it is what `ensureLoaded` uses.
+  static void _refuseIfSplit(RoutingGraph g, String id) {
+    if (g.splitParent == null) return;
+
+    throw StateError(
+      'Graph "$id" has split junctions and cannot be returned as a GeoGraph: '
+      'copies share their parent\'s id, so the turn restrictions they encode '
+      'would be silently lost. Use loadCompiled().',
+    );
   }
 
   @override

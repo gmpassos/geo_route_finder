@@ -53,6 +53,7 @@ export 'src/model/geo_turn_restriction.dart';
 export 'src/datasource/geo_data_source.dart';
 export 'src/osm/osm_converter.dart';
 export 'src/osm/osm_data_source.dart';
+export 'src/osm/conditional_restriction.dart';
 export 'src/osm/vehicle_profile.dart';
 
 // Graph compilation and optimization.

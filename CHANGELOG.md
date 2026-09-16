@@ -42,14 +42,35 @@
   handling: the `to` is the reverse of the `from`, so the ordinary rule removes
   it. U-turns everywhere else behave exactly as before.
 
-- **Conditional restrictions are carried, and default to the strict reading.**
-  A `restriction:conditional` cannot be topology — one graph has to answer both
-  "restricted now" and "not restricted now" — so the edge stays and `adjCond`
-  flags it. With no clock supplied, every condition applies: a turn forbidden
-  *sometimes* is treated as forbidden, because assuming the permissive case
-  would route a rider through a junction they may be barred from at exactly the
-  hour the restriction exists for. A clock parameter will narrow this without
-  another format change.
+- **Conditional restrictions are evaluated against a clock.**
+  `findRoute`/`findRoutes` take an optional `at`, and a turn barred only on
+  weekday mornings is open on a Sunday. A `restriction:conditional` cannot be
+  topology — one graph has to answer both "restricted now" and "not restricted
+  now" — so the edge stays and `adjCond` flags it.
+
+  **With no clock, every condition applies**, and so does anything the
+  expression parser cannot read. A turn wrongly left open sends a rider into a
+  manoeuvre the sign forbids at exactly the hour the sign exists for; a turn
+  wrongly left closed costs a detour. Those are not symmetric mistakes, and the
+  defaults are not symmetric about them.
+
+  The condition is evaluated at the moment the rider *arrives*,
+  `at + secondsSoFar`, not at departure — a restriction ending at nine does not
+  bind someone reaching the junction at five past. That stays sound for
+  Dijkstra without making the weights time-dependent: `dist[u]` is final when
+  `u` settles, so the predicate is asked once per edge at a fixed instant.
+
+  **Waiting is not modelled**, which is a statement about the answer rather
+  than the algorithm. A turn barred until half past nine is treated as barred
+  for the whole query, and a longer path that would arrive after it opens is
+  never preferred on those grounds. That is what a rider wants — nobody wants
+  advice to idle at a junction for an hour — but it is not the true
+  time-dependent optimum and is not described as one.
+
+  `ContractionHierarchyRouter` falls back to a plain search for a clocked
+  query. Its hierarchy is built with conditional edges removed, which is exact
+  for the unclocked case but leaves no way to re-admit an edge a clock says is
+  open. `avoidTolls` already takes the same way out, for the same reason.
 
   One byte per edge is *exact* only because of the split: the movement is
   already isolated onto a copy, so "this edge, from this approach" is

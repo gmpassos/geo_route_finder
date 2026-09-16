@@ -18,7 +18,7 @@ class DijkstraRouter extends GraphRouteFinder {
   });
 
   @override
-  RawPath search(int source, int target) {
+  RawPath search(int source, int target, {DateTime? at}) {
     final g = graph;
     final n = g.nodeCount;
     final dist = Float64List(n)..fillRange(0, n, double.infinity);
@@ -41,7 +41,7 @@ class DijkstraRouter extends GraphRouteFinder {
         if (w == double.infinity) continue;
         // `d` is real seconds on this path — no penalty is applied — so it is
         // the time the rider reaches this junction.
-        if (isBlocked(e, d)) continue;
+        if (isBlocked(e, d, at)) continue;
         final v = g.adjTarget[e];
         final nd = d + w;
         if (nd < dist[v]) {
