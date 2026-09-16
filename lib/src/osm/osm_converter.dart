@@ -11,6 +11,7 @@ import '../spatial/kd_tree.dart';
 import '../storage/compiled_graph.dart';
 import '../storage/geo_storage.dart';
 import 'vehicle_profile.dart';
+import 'way_access.dart';
 
 /// Converts an OpenStreetMap `.osm.pbf` extract into a routable graph.
 ///
@@ -585,20 +586,8 @@ class OsmConverter {
     if (highway == null) return false;
     if (_normalizeHighway(highway) == null) return false;
     if (way.tags['area'] == 'yes') return false;
-    if (!_accessAllowed(way)) return false;
+    if (WayAccessRules.of(way.tags, profile) == WayAccess.blocked) return false;
     return way.nodeIds.length >= 2;
-  }
-
-  /// Resolves access for the profile: the most-specific access key present on
-  /// the way decides. A value of `no`/`private` blocks; anything else (or the
-  /// absence of every key) allows.
-  bool _accessAllowed(GeoWay way) {
-    for (final key in profile.accessKeys) {
-      final v = way.tags[key];
-      if (v == null) continue;
-      return v != 'no' && v != 'private';
-    }
-    return true;
   }
 
   String? _normalizeHighway(String highway) {
@@ -610,6 +599,17 @@ class OsmConverter {
 
   double _speedFor(GeoWay way) {
     final base = _normalizeHighway(way.tags['highway']!)!;
+
+    // A `service=` subtype or a `tracktype` describes the surface far better
+    // than the class does — a parking aisle and a minor connector are both
+    // `highway=service`, and only one of them is 20 km/h. Where the tags say
+    // something specific, that wins over the class default and over a posted
+    // `maxspeed`, which on these ways is the limit of the road they lead off.
+    final specific = WayAccessRules.speedKmh(way.tags, profile);
+    if (specific != null) {
+      return specific < profile.maxSpeedKmh ? specific : profile.maxSpeedKmh;
+    }
+
     final fallback = profile.defaultSpeedKmh[base] ?? 40;
     final speed = profile.ignoreWayMaxspeed
         ? fallback
