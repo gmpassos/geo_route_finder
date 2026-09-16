@@ -1353,14 +1353,36 @@ void main() {
       }
     });
 
-    test('the alias loop takes the direct way in, not a lap', () async {
-      // The destination fix, on the shape that actually reaches it.
+    test('an `only_*` junction can still be delivered to', () async {
+      // Its copy has one way in and one out, which is exactly the shape a
+      // chain merge swallows. Contracting it splices the approach straight to
+      // the permitted exit — routing *through* stays correct, which is why
+      // this went unnoticed — but it leaves the junction with no aliases and
+      // no in-degree, so nothing can be delivered *to* it.
       //
-      // An `only_*` copy has one way in and one out, so the compressor
-      // collapses it and no alias survives — which is why the earlier test
-      // exercises only the single-target path. A `no_*` copy at a crossroads
-      // keeps three exits, so it is an anchor, survives, and the junction then
-      // genuinely has two vertices a route could arrive at.
+      // It reads as "no route" for an address plainly on a street. Found on
+      // Florianópolis, where 76 junctions were unreachable from anywhere in
+      // the city; Avenida Madre Benvenuta was one of them.
+      final storage = MemoryStorage();
+      await storage.saveGraph('r', crossroads(restriction: 'only'));
+
+      final route = await DijkstraRouter(storage: storage, graphId: 'r')
+          .findRoute(
+            const GeoCoordinate(lat: -23.500, lon: -46.700), // node 1
+            const GeoCoordinate(lat: -23.500, lon: -46.680), // the junction
+          );
+
+      expect(
+        route.found,
+        isTrue,
+        reason: 'a junction is a place, not only somewhere to pass through',
+      );
+      expect(route.distanceMeters, closeTo(1000, 1));
+    });
+
+    test('the alias loop takes the direct way in, not a lap', () async {
+      // The destination fix, on the shape that first reached it. A `no_*` copy
+      // at a crossroads keeps three exits, so it is an anchor either way.
       //
       // Arriving from 2, every path lands on the copy. Without the alias loop
       // the search cannot call that "reaching 3" and has to go round — out to

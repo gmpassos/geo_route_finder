@@ -17,7 +17,7 @@
 library;
 
 /// The version in `pubspec.yaml`, repeated for the code to read.
-const geoRouteFinderVersion = '1.4.0';
+const geoRouteFinderVersion = '1.4.1';
 
 /// This package, named and versioned the way an artefact records it.
 const geoRouteFinderId = 'geo_route_finder/$geoRouteFinderVersion';
