@@ -194,6 +194,75 @@ void main() {
     });
   });
 
+  group('saying what was and was not honoured', () {
+    // The cost of a restriction is invisible by construction — a forbidden
+    // turn is an edge that is not there — so everything that makes a build
+    // *explicable* is a reporting surface. A build that states only what it
+    // accepted cannot be judged.
+
+    test('a restriction describes itself', () {
+      const r = GeoTurnRestriction(
+        fromNodeId: 2,
+        viaNodeId: 3,
+        toNodeId: 4,
+        isOnly: true,
+      );
+
+      expect(r.toString(), contains('only'));
+      expect(r.toString(), contains('2 -> 3 -> 4'));
+      expect(r.isUTurn, isFalse);
+    });
+
+    test('a U-turn is one whose exit is its approach', () {
+      const r = GeoTurnRestriction(
+        fromNodeId: 2,
+        viaNodeId: 3,
+        toNodeId: 2,
+        isOnly: false,
+      );
+
+      expect(r.isUTurn, isTrue);
+      expect(r.toString(), startsWith('GeoTurnRestriction(no '));
+    });
+
+    test('a condition is named in the description', () {
+      const r = GeoTurnRestriction(
+        fromNodeId: 2,
+        viaNodeId: 3,
+        toNodeId: 4,
+        isOnly: false,
+        condition: 'no_left_turn @ (Sa,Su)',
+      );
+
+      expect(r.toString(), contains('@ no_left_turn @ (Sa,Su)'));
+    });
+
+    test('skipped is every reason a restriction was not honoured', () {
+      // If this drifts out of step with the fields, a build reports fewer
+      // losses than it had — which is the one direction that matters.
+      const stats = TurnRestrictionStats(
+        accepted: 10,
+        skippedViaWay: 1,
+        unresolvedMember: 2,
+        ambiguousMember: 3,
+        contradictory: 4,
+        excepted: 5,
+        conditions: 6,
+      );
+
+      expect(stats.skipped, equals(15));
+      expect(stats.toString(), contains('10 accepted'));
+      expect(stats.toString(), contains('15 skipped'));
+      expect(stats.toString(), contains('6 conditional'));
+    });
+
+    test('a clean build reports zero rather than nothing', () {
+      const stats = TurnRestrictionStats();
+      expect(stats.skipped, isZero);
+      expect(stats.toString(), contains('0 accepted'));
+    });
+  });
+
   group('what it refuses rather than guesses', () {
     Future<TurnRestrictionStats> statsOf(
       Uint8List pbf, {
@@ -749,6 +818,100 @@ void main() {
         hasLength(1),
         reason: 'routers disagree with a clock: $distances',
       );
+    });
+
+    test('the alias loop takes the direct way in, not a lap', () async {
+      // The destination fix, on the shape that actually reaches it.
+      //
+      // An `only_*` copy has one way in and one out, so the compressor
+      // collapses it and no alias survives — which is why the earlier test
+      // exercises only the single-target path. A `no_*` copy at a crossroads
+      // keeps three exits, so it is an anchor, survives, and the junction then
+      // genuinely has two vertices a route could arrive at.
+      //
+      // Arriving from 2, every path lands on the copy. Without the alias loop
+      // the search cannot call that "reaching 3" and has to go round — out to
+      // another arm and back — which is twice the distance.
+      final storage = MemoryStorage();
+      await storage.saveGraph('r', crossroads(restriction: 'no'));
+
+      final route = await DijkstraRouter(storage: storage, graphId: 'r')
+          .findRoute(
+            const GeoCoordinate(lat: -23.500, lon: -46.700), // node 1
+            const GeoCoordinate(
+              lat: -23.500,
+              lon: -46.680,
+            ), // node 3, the junction
+          );
+
+      expect(route.found, isTrue);
+      expect(
+        route.distanceMeters,
+        closeTo(1000, 1),
+        reason: 'straight in along 1-2-3, not a lap through another arm',
+      );
+    });
+
+    test('survives the compiled pipeline, which is what ships', () async {
+      // Every other routing test here goes through `MemoryStorage`, i.e. the
+      // generic `GeoStorage` path — and `ensureLoaded` has *two* branches. The
+      // one production uses is this one: `OsmConverter.convert` writes the
+      // .graph/.index/.meta triple and the router loads the compiled artifact.
+      //
+      // So this is the path where the split has to survive serialization, the
+      // KD-tree subset has to round-trip, and the compressor has to have kept
+      // the parent alive. Testing only the generic path would leave all of
+      // that unexercised in the shape that actually ships.
+      final dir = Directory.systemTemp.createTempSync('grf_compiled_');
+
+      try {
+        final path = writeTempPbf(
+          _junction(
+            restriction: const {
+              'type': 'restriction',
+              'restriction': 'no_left_turn',
+            },
+          ),
+        );
+
+        try {
+          await OsmConverter().convert(
+            inputFile: path,
+            storage: LocalFileStorage(directory: dir.path),
+            graphId: 'compiled',
+          );
+        } finally {
+          File(path).parent.deleteSync(recursive: true);
+        }
+
+        final loaded = await LocalFileStorage(
+          directory: dir.path,
+        ).loadCompiled('compiled', profile: VehicleProfile.car);
+
+        final g = loaded!.graph;
+
+        expect(
+          g.splitParent,
+          isNotNull,
+          reason: 'the split must survive being written and read back',
+        );
+        expect(
+          [
+            for (var v = 0; v < g.nodeCount; v++)
+              if (g.isSplitCopy(v)) v,
+          ],
+          isNotEmpty,
+          reason: 'a restricted junction must still be split after compiling',
+        );
+
+        // And the index still snaps, despite covering fewer vertices than the
+        // graph has.
+        expect(loaded.tree.order.length, lessThan(g.nodeCount));
+        final snapped = loaded.tree.findNearest(-23.50, -46.68);
+        expect(g.isSplitCopy(snapped.node), isFalse);
+      } finally {
+        dir.deleteSync(recursive: true);
+      }
     });
 
     test('copies stay out of the spatial index', () async {
