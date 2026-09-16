@@ -1908,6 +1908,41 @@ void main() {
       expect(orphan.toString(), contains('2380729425'));
     });
 
+    test('the same orphaned exit is one entry, not two', () async {
+      // Value equality has to reach `hashCode` as well as `==`, or a caller
+      // collecting these into a set to de-duplicate across profiles gets one
+      // entry per car, bike and foot build of the same junction.
+      const a = OrphanedExit(viaNodeId: 3, toNodeId: 5);
+      const b = OrphanedExit(viaNodeId: 3, toNodeId: 5);
+      const other = OrphanedExit(viaNodeId: 3, toNodeId: 4);
+
+      final seen = <OrphanedExit, int>{};
+      for (final o in const [a, b, other]) {
+        seen[o] = (seen[o] ?? 0) + 1;
+      }
+
+      expect(seen, hasLength(2));
+      expect(seen[a], equals(2), reason: 'a and b are the same junction');
+      expect(a.hashCode, equals(b.hashCode));
+    });
+
+    test('the read counts mention orphaned exits only when there are any', () {
+      // This string is what a build prints. An unconditional "0 orphaned
+      // exits" on every clean build is noise that trains the reader to skip
+      // the line — which is the one line that matters on the build where it
+      // is not zero.
+      const clean = TurnRestrictionStats(accepted: 4);
+      expect(clean.toString(), isNot(contains('orphaned')));
+
+      const severed = TurnRestrictionStats(
+        accepted: 4,
+        orphanedExits: [
+          OrphanedExit(viaNodeId: 1874470572, toNodeId: 2380729425),
+        ],
+      );
+      expect(severed.toString(), contains('1 orphaned exits'));
+    });
+
     test('a restriction naming an exit the junction lacks is inert', () async {
       // Node 1 is not an exit of node 3, so the ban removes nothing and the
       // copy would permit exactly what its parent does — a vertex, a duplicate
