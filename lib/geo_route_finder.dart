@@ -55,6 +55,7 @@ export 'src/osm/osm_converter.dart';
 export 'src/osm/osm_data_source.dart';
 export 'src/osm/conditional_restriction.dart';
 export 'src/osm/vehicle_profile.dart';
+export 'src/osm/way_access.dart';
 
 // Graph compilation and optimization.
 export 'src/graph/graph_types.dart';

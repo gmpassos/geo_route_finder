@@ -97,6 +97,18 @@ class RoutingGraph {
   /// per incoming edge.
   final Uint8List? adjCond;
 
+  /// Whether each directed edge may only be used to reach something on it.
+  ///
+  /// A driveway, a parking aisle, a track, a road signed `access=destination`.
+  /// One byte per edge, beside [adjToll] and [adjSignal].
+  ///
+  /// This one could not become topology the way turn restrictions did. A
+  /// forbidden turn is forbidden for everyone, always, so removing the edge
+  /// states it exactly; whether a driveway may be used depends on where the
+  /// route starts and ends, which is not known until someone asks. So the flag
+  /// travels with the graph and the search reads it.
+  final Uint8List adjAccess;
+
   /// The highest condition index a byte can carry, reserved to mean "in force
   /// whenever anyone asks".
   ///
@@ -133,6 +145,7 @@ class RoutingGraph {
     required this.adjDist,
     required this.adjToll,
     required this.adjSignal,
+    required this.adjAccess,
     required this.geomCoords,
     required this.geomOffset,
     this.splitParent,
@@ -169,6 +182,13 @@ class RoutingGraph {
 
   /// Whether edge [e] crosses at least one toll.
   bool isToll(int e) => adjToll[e] != 0;
+
+  /// Whether edge [e] may only be used to reach something on it.
+  ///
+  /// True for a driveway, a parking aisle, a track, or a way signed
+  /// `access=destination` and its relatives. A search may use a run of these
+  /// at the start or the end of a route and nowhere in between.
+  bool isAccessOnly(int e) => adjAccess[e] != 0;
 
   /// Number of signalised junctions entered by traversing edge [e].
   int signalsOf(int e) => adjSignal[e];

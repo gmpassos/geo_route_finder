@@ -195,6 +195,7 @@ class GraphCompressor {
         var time = g.adjTime[e];
         var tolls = g.adjToll[e];
         var signals = g.adjSignal[e];
+        var accessOnly = g.isAccessOnly(e);
         final condition = g.conditionOf(e);
         final geom = <GeoCoordinate>[...g.geometryOf(e)];
 
@@ -207,6 +208,14 @@ class GraphCompressor {
           time += g.adjTime[nextEdge];
           tolls += g.adjToll[nextEdge];
           signals += g.adjSignal[nextEdge];
+          // The strictest reading along the chain, unlike the sums beside it.
+          //
+          // The interior vertices are degree 2, so this merged edge is the
+          // only way between its two junctions — and if any step of it may
+          // only be used to reach something, so may the whole. Taking the
+          // first edge's flag instead, the way `condition` does, would let a
+          // public first segment launder the driveway behind it.
+          accessOnly = accessOnly || g.isAccessOnly(nextEdge);
           geom.addAll(g.geometryOf(nextEdge));
           cur = g.adjTarget[nextEdge];
         }
@@ -234,7 +243,17 @@ class GraphCompressor {
         }(), 'a conditional edge was swallowed into the middle of a chain');
 
         merged.add(
-          _MergedEdge(a, cur, dist, time, tolls, signals, geom, condition),
+          _MergedEdge(
+            a,
+            cur,
+            dist,
+            time,
+            tolls,
+            signals,
+            geom,
+            condition,
+            accessOnly,
+          ),
         );
       }
     }
@@ -335,6 +354,8 @@ class GraphCompressor {
       if (byTime != 0) return byTime;
       final byCondition = (a.condition ?? '').compareTo(b.condition ?? '');
       if (byCondition != 0) return byCondition;
+      final byAccess = (a.accessOnly ? 1 : 0) - (b.accessOnly ? 1 : 0);
+      if (byAccess != 0) return byAccess;
       return a.geometry.length.compareTo(b.geometry.length);
     });
 
@@ -352,6 +373,7 @@ class GraphCompressor {
     final adjDist = Float64List(em);
     final adjToll = Uint8List(em);
     final adjSignal = Uint8List(em);
+    final adjAccess = Uint8List(em);
     final adjCond = Uint8List(em);
     final conditions = <String>[];
     final geomOffset = Int32List(em + 1);
@@ -389,6 +411,7 @@ class GraphCompressor {
       // on it is a number nobody reads for precision anyway. The *delay* is
       // unaffected, because it lives in `time`.
       adjSignal[i] = m.signals > 255 ? 255 : m.signals;
+      adjAccess[i] = m.accessOnly ? 1 : 0;
       geomOffset[i] = geomBuilder.length ~/ 2;
       for (final c in m.geometry) {
         geomBuilder.add(c.lat);
@@ -407,6 +430,7 @@ class GraphCompressor {
       adjDist: adjDist,
       adjToll: adjToll,
       adjSignal: adjSignal,
+      adjAccess: adjAccess,
       geomCoords: Float64List.fromList(geomBuilder),
       geomOffset: geomOffset,
       splitParent: splitParent,
@@ -498,6 +522,13 @@ class _MergedEdge {
   /// never passes through it.
   final String? condition;
 
+  /// Whether any step of the chain may only be used to reach something on it.
+  ///
+  /// The strictest reading along the chain rather than the first edge's, since
+  /// the interior vertices are degree 2 and this edge is therefore the only
+  /// way between its two junctions.
+  final bool accessOnly;
+
   int newSource = 0;
   int newTarget = 0;
   _MergedEdge(
@@ -509,5 +540,6 @@ class _MergedEdge {
     this.signals,
     this.geometry,
     this.condition,
+    this.accessOnly,
   );
 }

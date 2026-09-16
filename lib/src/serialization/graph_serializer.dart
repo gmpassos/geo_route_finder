@@ -28,7 +28,21 @@ import '../spatial/kd_tree.dart';
 /// is worse still: it has no split junctions, so every turn restriction in the
 /// city silently fails to apply and the routes look entirely reasonable while
 /// being illegal to follow. Refusing is the only honest option.
-const int kGraphFormatVersion = 4;
+/// v5 added `adjAccess`, one byte per directed edge, beside `adjToll` and
+/// `adjSignal`: whether the edge may only be used to reach something on it — a
+/// driveway, a parking aisle, a track, a way signed `access=destination`.
+///
+/// Unlike a turn restriction this could not become topology. A forbidden turn
+/// is forbidden for everyone always, so removing the edge states it exactly;
+/// whether a driveway may be used depends on where the route starts and ends,
+/// which is not known until someone asks. So the flag ships with the graph.
+///
+/// A v4 graph read as a v5 would have the array absent rather than false, and
+/// the honest reason to refuse it is the other direction: a v4 graph was built
+/// before `service=`, `access=destination` and barriers were read at all, so
+/// its edges are not merely unflagged, they are *wrong* — a permit-only car
+/// park is in there as a 20 km/h public road.
+const int kGraphFormatVersion = 5;
 
 /// Header flag: the payload carries `splitParent`.
 ///
@@ -89,9 +103,9 @@ class GraphSerializer {
     final f64Bytes = 8 * (3 * n + 2 * m + 2 * gp);
     final i32Bytes =
         4 * ((n + 1) + m + (m + 1) + (splitParent == null ? 0 : n));
-    // adjToll and adjSignal, plus adjCond when present, one byte each per
-    // edge; then the condition text.
-    final u8Bytes = (adjCond == null ? 2 : 3) * m + conditionBlob.length;
+    // adjToll, adjSignal and adjAccess, plus adjCond when present, one byte
+    // each per edge; then the condition text.
+    final u8Bytes = (adjCond == null ? 3 : 4) * m + conditionBlob.length;
     final total = header + f64Bytes + i32Bytes + u8Bytes;
 
     final out = Uint8List(total);
@@ -139,6 +153,8 @@ class GraphSerializer {
     off += g.adjToll.length;
     out.setRange(off, off + g.adjSignal.length, g.adjSignal);
     off += g.adjSignal.length;
+    out.setRange(off, off + g.adjAccess.length, g.adjAccess);
+    off += g.adjAccess.length;
     if (adjCond != null) {
       out.setRange(off, off + adjCond.length, adjCond);
       off += adjCond.length;

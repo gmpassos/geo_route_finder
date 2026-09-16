@@ -48,6 +48,68 @@ class _Shortcut {
   );
 }
 
+/// One end of a route, inside a private area.
+///
+/// The cheapest access-only path from a source out to each junction where its
+/// private area meets the public network, or — walked the other way — from
+/// each such junction in to a destination. Empty of everything but the
+/// endpoint itself when that endpoint is on a public road, which is the
+/// ordinary case.
+class _PrivateWalk {
+  /// The vertex the walk started from: the source, or the target.
+  final int origin;
+
+  /// Whether the walk followed edges outward from [origin] or backward to it.
+  final bool outward;
+
+  /// Cost in seconds between [origin] and each vertex reached.
+  final cost = <int, double>{};
+
+  /// The next vertex back toward [origin], per vertex reached.
+  final step = <int, int>{};
+
+  /// The routing edge taken to get there.
+  final stepEdge = <int, int>{};
+
+  _PrivateWalk(this.origin, this.outward);
+
+  /// The routing edges from [origin] to [v], in travel order.
+  ///
+  /// Only meaningful on an outward walk, where [origin] is the source.
+  List<int> edgesTo(int v) {
+    if (!outward || v == origin) return const [];
+
+    final reversed = <int>[];
+    var cur = v;
+    while (cur != origin) {
+      final e = stepEdge[cur];
+      final prev = step[cur];
+      if (e == null || prev == null) return const [];
+      reversed.add(e);
+      cur = prev;
+    }
+    return reversed.reversed.toList();
+  }
+
+  /// The routing edges from [v] to [origin], in travel order.
+  ///
+  /// Only meaningful on a backward walk, where [origin] is the target.
+  List<int> edgesFrom(int v) {
+    if (outward || v == origin) return const [];
+
+    final edges = <int>[];
+    var cur = v;
+    while (cur != origin) {
+      final e = stepEdge[cur];
+      final next = step[cur];
+      if (e == null || next == null) return const [];
+      edges.add(e);
+      cur = next;
+    }
+    return edges;
+  }
+}
+
 /// Contraction-Hierarchies router: optional preprocessing that yields
 /// dramatically faster queries than plain Dijkstra/A* on the same graph.
 ///
@@ -126,6 +188,18 @@ class ContractionHierarchyRouter extends GraphRouteFinder {
       // `_penalizedSearch` for a clocked query, exactly as `avoidTolls`
       // already does — the backward search has no clock to evaluate against.
       if (adjCond != null && adjCond[e] != 0) continue;
+
+      // An access-only edge is kept out for the same reason and a sharper one.
+      //
+      // In the *middle* of a route such an edge is never usable, whoever is
+      // asking — that is what access-only means — so a hierarchy over the
+      // public network alone answers the middle exactly. Leaving them in would
+      // be unsound rather than merely wasteful: contraction hides edges inside
+      // shortcuts, and a shortcut spanning a parking aisle would carry it into
+      // every query, where no check can see it.
+      //
+      // The ends are a different question, and `search` answers it separately.
+      if (g.isAccessOnly(e)) continue;
 
       final id = _edges.length;
       final from = _sourceOfEdge(e);
@@ -332,6 +406,41 @@ class ContractionHierarchyRouter extends GraphRouteFinder {
     // cannot be re-weighted after the fact.
     if (at != null) return searchOverGraph(source, target, at);
 
+    // The private ends of the route, walked over access-only edges alone.
+    //
+    // The hierarchy covers the public network and nothing else, which is exact
+    // for the middle of a route — an access-only edge is never usable there.
+    // What it cannot answer is the run out of the car park the rider is
+    // standing in, or the run into the driveway they are going to. Those are a
+    // handful of edges each, so they are walked directly and stitched on.
+    //
+    // Both collapse to a single entry when the endpoint sits on a public road,
+    // which is the ordinary case and costs nothing.
+    final out = _walkPrivate(source, outward: true);
+    final into = _walkPrivate(target, outward: false);
+
+    // Source and destination inside the same private area — two flats in one
+    // condominium — so the route never touches the public network at all and
+    // the hierarchy has nothing to say about it.
+    final inside = out.cost.containsKey(target)
+        ? _pathThroughPrivate(source, target, out)
+        : null;
+
+    final middle = _searchPublic(source, target, out, into);
+
+    if (middle == null) return inside ?? RawPath.none;
+    if (inside == null) return middle;
+    return middle.timeSeconds <= inside.timeSeconds ? middle : inside;
+  }
+
+  /// The shortest path between the public ends of two private areas, using the
+  /// hierarchy, then stitched back onto the private runs at each end.
+  RawPath? _searchPublic(
+    int source,
+    int target,
+    _PrivateWalk out,
+    _PrivateWalk into,
+  ) {
     final n = graph.nodeCount;
     final distF = Float64List(n)..fillRange(0, n, double.infinity);
     final distB = Float64List(n)..fillRange(0, n, double.infinity);
@@ -342,14 +451,32 @@ class ContractionHierarchyRouter extends GraphRouteFinder {
 
     final heapF = MinHeap();
     final heapB = MinHeap();
-    distF[source] = 0;
-    distB[target] = 0;
-    heapF.push(0, source);
-    heapB.push(0, target);
+
+    // Seeded from every way out of the source's private area, and every way
+    // into the target's, each carrying the cost of getting there. With no
+    // private area at either end these are just the source and the target.
+    for (final entry in out.cost.entries) {
+      distF[entry.key] = entry.value;
+      heapF.push(entry.value, entry.key);
+    }
+    for (final entry in into.cost.entries) {
+      distB[entry.key] = entry.value;
+      heapB.push(entry.value, entry.key);
+    }
 
     var mu = double.infinity;
     var meet = -1;
     var expanded = 0;
+
+    // A seed that is already on both sides: the two private areas touch the
+    // public network at the same junction.
+    for (final entry in out.cost.entries) {
+      final both = into.cost[entry.key];
+      if (both != null && entry.value + both < mu) {
+        mu = entry.value + both;
+        meet = entry.key;
+      }
+    }
 
     while (heapF.isNotEmpty || heapB.isNotEmpty) {
       final fMin = heapF.isEmpty ? double.infinity : heapF.peekKey;
@@ -402,52 +529,129 @@ class ContractionHierarchyRouter extends GraphRouteFinder {
     }
 
     reportExpandedNodes(expanded);
-    if (meet < 0) return RawPath.none;
+    if (meet < 0) return null;
 
-    // Forward CH edges source -> meet.
+    // Forward CH edges, back to whichever seed this path actually started
+    // from — not necessarily the source, which may be inside a car park.
     final fwdCh = <int>[];
     var cur = meet;
-    while (cur != source) {
-      final eid = peF[cur];
-      if (eid < 0) return RawPath.none;
-      fwdCh.add(eid);
+    while (peF[cur] >= 0) {
+      fwdCh.add(peF[cur]);
       cur = pnF[cur];
     }
+    final entered = cur;
     final fwdOrdered = fwdCh.reversed.toList();
 
-    // Backward CH edges meet -> target.
+    // Backward CH edges, out to the seed on the far side.
     final bwdCh = <int>[];
     cur = meet;
-    while (cur != target) {
-      final eid = peB[cur];
-      if (eid < 0) return RawPath.none;
-      bwdCh.add(eid);
+    while (peB[cur] >= 0) {
+      bwdCh.add(peB[cur]);
       cur = pnB[cur];
     }
+    final left = cur;
 
     // Unpack shortcuts into original routing edges, in path order.
-    final origEdges = <int>[];
-    for (final eid in fwdOrdered) {
-      _unpack(eid, origEdges);
-    }
-    for (final eid in bwdCh) {
-      _unpack(eid, origEdges);
-    }
+    final origEdges = <int>[
+      ...out.edgesTo(entered),
+      for (final eid in fwdOrdered) ..._unpacked(eid),
+      for (final eid in bwdCh) ..._unpacked(eid),
+      ...into.edgesFrom(left),
+    ];
 
+    return _rawPath(source, origEdges);
+  }
+
+  List<int> _unpacked(int eid) {
+    final out = <int>[];
+    _unpack(eid, out);
+    return out;
+  }
+
+  /// A route wholly inside one private area.
+  RawPath _pathThroughPrivate(int source, int target, _PrivateWalk out) =>
+      _rawPath(source, out.edgesTo(target));
+
+  /// Builds the answer from the routing edges it is made of.
+  ///
+  /// The totals are summed here rather than taken from the search, because a
+  /// stitched path's cost is spread over three pieces and `mu` only knows
+  /// about the middle one.
+  RawPath _rawPath(int source, List<int> edges) {
     final g = graph;
     final vertices = <int>[source];
     var distance = 0.0;
-    for (final oid in origEdges) {
+    var time = 0.0;
+    for (final oid in edges) {
       distance += g.adjDist[oid];
+      time += g.adjTime[oid];
       vertices.add(g.adjTarget[oid]);
     }
 
     return RawPath(
       vertices: vertices,
-      edges: origEdges,
+      edges: edges,
       distanceMeters: distance,
-      timeSeconds: mu,
+      timeSeconds: time,
     );
+  }
+
+  /// Walks the private area around [from] over access-only edges alone.
+  ///
+  /// [outward] follows edges out of the area, for a source inside one;
+  /// otherwise it follows them backwards, for a destination inside one. The
+  /// walk stops at the first public junction — that is where the private area
+  /// ends — but keeps it, because it is where the hierarchy takes over.
+  ///
+  /// An endpoint that is not inside a private area yields just itself at zero
+  /// cost, which makes every caller below the ordinary case with no branch.
+  _PrivateWalk _walkPrivate(int from, {required bool outward}) {
+    final walk = _PrivateWalk(from, outward);
+    if (!isInsidePrivateArea(from)) {
+      walk.cost[from] = 0;
+      return walk;
+    }
+
+    final g = graph;
+    final heap = MinHeap();
+    walk.cost[from] = 0;
+    heap.push(0, from);
+
+    while (heap.isNotEmpty) {
+      final d = heap.peekKey;
+      final u = heap.pop();
+      if (d > (walk.cost[u] ?? double.infinity)) continue;
+      // Only keep walking while inside; a public junction is the boundary.
+      if (u != from && !isInsidePrivateArea(u)) continue;
+
+      if (outward) {
+        for (var e = g.adjOffset[u]; e < g.adjOffset[u + 1]; e++) {
+          if (!g.isAccessOnly(e)) continue;
+          final v = g.adjTarget[e];
+          final nd = d + g.adjTime[e];
+          if (nd < (walk.cost[v] ?? double.infinity)) {
+            walk.cost[v] = nd;
+            walk.step[v] = u;
+            walk.stepEdge[v] = e;
+            heap.push(nd, v);
+          }
+        }
+      } else {
+        for (final p in accessOnlyInto(u)) {
+          final e = accessOnlyEdgeBetween(p, u);
+          if (e < 0) continue;
+          final nd = d + g.adjTime[e];
+          if (nd < (walk.cost[p] ?? double.infinity)) {
+            walk.cost[p] = nd;
+            walk.step[p] = u;
+            walk.stepEdge[p] = e;
+            heap.push(nd, p);
+          }
+        }
+      }
+    }
+
+    return walk;
   }
 
   void _unpack(int eid, List<int> out) {

@@ -25,6 +25,18 @@ class GeoEdge {
   /// collapsed, so a route can report and avoid tolls.
   final int tolls;
 
+  /// Whether this segment may only be used to reach something on it.
+  ///
+  /// A driveway, a parking aisle, a track, a road signed `access=destination`.
+  /// Not unusable — a rider has to be able to reach the address — but never a
+  /// link in the middle of a route, which is what stops a router cutting
+  /// across a supermarket car park to save thirty metres.
+  ///
+  /// Kept as a property of the edge rather than resolved at build time,
+  /// because whether it may be used depends on where the route starts and
+  /// ends. Turn restrictions could become topology; this cannot.
+  final bool accessOnly;
+
   /// Optional intermediate geometry, expressed as node ids that lie between
   /// [sourceId] and [targetId]. Empty for a straight segment. These points are
   /// purely cosmetic for the routing graph (they are collapsed away) but are
@@ -38,6 +50,7 @@ class GeoEdge {
     required this.speedKmh,
     this.oneWay = false,
     this.tolls = 0,
+    this.accessOnly = false,
     this.shapePoints = const [],
   });
 

@@ -97,6 +97,7 @@ class GraphDeserializer {
         : null;
     final adjToll = takeU8(m);
     final adjSignal = takeU8(m);
+    final adjAccess = takeU8(m);
 
     Uint8List? adjCond;
     var conditions = const <String>[];
@@ -127,6 +128,7 @@ class GraphDeserializer {
       adjDist: adjDist,
       adjToll: adjToll,
       adjSignal: adjSignal,
+      adjAccess: adjAccess,
       geomCoords: geomCoords,
       geomOffset: geomOffset,
       splitParent: splitParent,

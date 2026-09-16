@@ -62,8 +62,21 @@ class VehicleProfile {
     this.restrictionExceptions = const {},
   });
 
+  /// Whether this profile drives a motor vehicle.
+  ///
+  /// Derived rather than declared, so it cannot disagree with the access keys
+  /// it is about: a profile that consults `motor_vehicle` is one that motor
+  /// restrictions apply to. Decides `agricultural`/`forestry` blocking, whether
+  /// a track is an approach or an ordinary minor way, and whether a footway
+  /// needs an explicit invitation.
+  bool get isMotorVehicle => accessKeys.contains('motor_vehicle');
+
   /// Highway classes drivable by motor vehicles. Shared by [car] and
   /// [motorcycle].
+  ///
+  /// `track` is here so that a rural address on one can be *reached*.
+  /// `WayAccessRules` then marks it access-only, so no route crosses a farm
+  /// track to save time, and gives it a speed from its `tracktype`.
   static const Set<String> motorHighways = {
     'motorway',
     'trunk',
@@ -74,6 +87,7 @@ class VehicleProfile {
     'service',
     'living_street',
     'unclassified',
+    'track',
   };
 
   /// Default motor-vehicle speeds in km/h per (normalized) highway class.
@@ -87,6 +101,9 @@ class VehicleProfile {
     'service': 20,
     'living_street': 10,
     'unclassified': 40,
+    // Overridden per `tracktype` by `WayAccessRules.speedKmh`; this is the
+    // floor for one that says nothing at all.
+    'track': 10,
   };
 
   /// Private cars.

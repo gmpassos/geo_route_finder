@@ -1,3 +1,107 @@
+## 1.4.0
+
+- **A driveway is somewhere to arrive, not somewhere to cut through.** A car
+  park that saves thirty metres was a legal shortcut, because nothing told the
+  router otherwise. New `WayAccess` distinguishes three answers where there
+  were two: usable by anyone, usable only to reach something on it, and not
+  usable at all.
+
+  A vertex counts as *inside* a private area when every edge leaving it may
+  only be used for access — the junction where a driveway meets the street is
+  not one, which is exactly where the private area ends. A route may drive out
+  of the area it starts in and into the one it is going to, and use no such
+  edge anywhere else.
+
+  "A run of access-only edges at each end" sounds like the same rule and is
+  not: a route starting on a street beside a car park can open with a run
+  straight across it and still satisfy that wording. Keying on where the
+  endpoints *are* is what closes it.
+
+- **`service=` is read at last.** It decided nothing before: a driveway, a
+  parking aisle, an alley, a fire lane, a drive-through queue and a bus-only
+  road were one bucket at 20 km/h, every one of them a through-route.
+
+  Now `driveway` and `parking_aisle` are access-only at 10 km/h — 20 was a
+  fiction, and the fiction is what made cutting through a car park look cheap.
+  `alley` stays a through-route at 15, because it is often *the* delivery
+  access behind a row of shops. `drive-through`, `emergency_access`, `bus` and
+  `slipway` are not roads at all.
+
+- **`access=` recognised two values and now reads the rest.** `destination` —
+  the tag that literally means no through traffic — was read as a plain yes,
+  and so were `customers`, `delivery`, `permit`, `agricultural` and
+  `forestry`. The first four are access-only now; the last two close a way to
+  motor vehicles only, because a scooter is not a tractor.
+
+  Where the class and the access value disagree the stricter wins, an explicit
+  `yes` may loosen a category default, and nothing reopens an excluded
+  subtype: `access=yes` on a fire lane is still a fire lane. A value none of
+  the tables name is read as *no opinion* rather than as a restriction —
+  treating the unknown as restrictive would let one typo quietly demote an
+  arterial to an approach road.
+
+- **Barriers and gates stop a route.** They are node tags on a way's vertices
+  and nothing read them, so a bollard, a locked gate and a fire barrier were
+  plain vertices that every route drove straight through. That is not a slower
+  route; it is a rider arriving at something they cannot pass.
+
+  A gate takes its default from the road it sits on — a property boundary on a
+  service road or a track, a feature that usually stands open on a public
+  street. Most mappers leave a passable gate untagged and put `access=private`
+  on the shut ones, so blocking every bare gate would cut public streets on a
+  guess and passing every bare gate would route through condominiums.
+
+  Bollards, blocks and bus traps stop a car and let a bicycle past, which is
+  their whole purpose. An unrecognised barrier stops everyone — the opposite
+  of how an unreadable access value is treated, and deliberately: an unknown
+  `barrier=` is a mapper saying a physical thing stands in the road.
+
+  Where one blocks, the way is severed and the node becomes **two vertices at
+  one coordinate**, one per side. Nothing passes through, and both sides still
+  route right up to it — which for a delivery is usually the address itself.
+
+- **Tracks join the motor network as approaches**, with a speed from their
+  `tracktype`: `grade1` 25 km/h down to `grade5` 5, and an unsurveyed one
+  assumed rough at 10. A rural address on one is reachable now; no route
+  crosses one to save time. Bicycles treat a track as the ordinary minor way
+  it is for them.
+
+- **A bicycle no longer rides over every pavement.** `footway`, `pedestrian`
+  and `bridleway` were routable at 8 km/h with no check at all; they need
+  `bicycle=yes|designated` now. The same shape of bug as ignoring `service=`:
+  a tag that decides the answer was never read.
+
+- **Graph format v4 → v5**, and **every pack must be rebuilt**. `adjAccess`
+  joins `adjToll` and `adjSignal`, one byte per directed edge.
+
+  Refusing a v4 graph is the point rather than a formality. A v4 graph was
+  built before any of the above was read, so its edges are not merely
+  unflagged — a permit-only car park is in there as a 20 km/h public road, and
+  reading one as v5 would say every way in the city is open, confidently.
+
+  Unlike a turn restriction, this could not become topology. A forbidden turn
+  is forbidden for everyone always, so deleting the edge states it exactly;
+  whether a driveway may be used depends on where the route starts and ends,
+  which is not known until someone asks.
+
+- **`ContractionHierarchyRouter` keeps its hierarchy.** Access-only edges are
+  left out of it entirely, which is exact rather than a compromise: in the
+  *middle* of a route such an edge is never usable, whoever is asking, so a
+  hierarchy over the public network answers the middle exactly. Leaving them
+  in would have been unsound, not merely wasteful — contraction hides edges
+  inside shortcuts, and a shortcut spanning a parking aisle would be carried
+  into every query where no check could see it.
+
+  The ends are a different question, so the query walks the private area
+  around the source and around the destination separately — a handful of edges
+  each — seeds the bidirectional search from every junction where those areas
+  meet the public network, and stitches the three pieces back together. A
+  route wholly inside one private area, two flats in the same condominium,
+  never touches the hierarchy at all.
+
+  A clocked query still falls back to the plain search, as it did before: the
+  backward half of a bidirectional search has no clock to evaluate against.
+
 ## 1.3.0
 
 - **Turn restrictions are honoured, so a route is one a rider may legally
