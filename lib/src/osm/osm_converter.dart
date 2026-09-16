@@ -280,14 +280,28 @@ class OsmConverter {
         continue;
       }
 
-      final kind = tags['restriction'] ?? tags['restriction:conditional'];
-      if (kind == null) {
+      // A relation carrying *both* tags describes two different signs, and
+      // merging them downgrades the permanent one.
+      //
+      // Taking `kind` from `restriction` and `condition` from
+      // `restriction:conditional` produced one record whose ban comes from the
+      // always-on sign and whose *timetable* comes from the timed one — so
+      // outside the window the permanent restriction stopped applying and the
+      // forbidden turn was offered. The pair needs two records, not one.
+      final unconditional = tags['restriction'];
+      final conditional = tags['restriction:conditional'];
+
+      if (unconditional == null && conditional == null) {
         unresolvedMember++;
         continue;
       }
 
-      final isOnly = kind.trimLeft().startsWith('only');
-      if (!isOnly && !kind.trimLeft().startsWith('no')) {
+      // Each value is judged on its own, so a relation whose permanent tag is
+      // unreadable still contributes its timed one, and the other way round.
+      final unconditionalIsBan = unconditional != null && _isBan(unconditional);
+      final conditionalIsBan = conditional != null && _isBan(conditional);
+
+      if (!unconditionalIsBan && !conditionalIsBan) {
         unresolvedMember++;
         continue;
       }
@@ -324,18 +338,34 @@ class OsmConverter {
         continue;
       }
 
-      final condition = tags['restriction:conditional'];
-      if (condition != null) conditions.add(condition);
+      // One record per sign. A relation carrying both tags is two signs at one
+      // junction — an always-on ban and a timed one — and emitting a single
+      // record would make the permanent one expire with the timetable.
+      if (unconditionalIsBan) {
+        out.add(
+          GeoTurnRestriction(
+            fromNodeId: from,
+            viaNodeId: viaNodeId,
+            toNodeId: to,
+            isOnly: unconditional.trimLeft().startsWith('only'),
+          ),
+        );
+      }
 
-      out.add(
-        GeoTurnRestriction(
-          fromNodeId: from,
-          viaNodeId: viaNodeId,
-          toNodeId: to,
-          isOnly: isOnly,
-          condition: condition,
-        ),
-      );
+      if (conditionalIsBan) {
+        conditions.add(conditional);
+        out.add(
+          GeoTurnRestriction(
+            fromNodeId: from,
+            viaNodeId: viaNodeId,
+            toNodeId: to,
+            // Read from its own tag rather than inherited: the two signs need
+            // not agree about which movement they forbid.
+            isOnly: conditional.trimLeft().startsWith('only'),
+            condition: conditional,
+          ),
+        );
+      }
     }
 
     _lastRestrictionStats = TurnRestrictionStats(
@@ -348,6 +378,17 @@ class OsmConverter {
     );
 
     return out;
+  }
+
+  /// Whether a `restriction` value names a movement this converter understands.
+  ///
+  /// The vocabulary is `no_*` and `only_*`; anything else — a mistyped value, a
+  /// free-text note, a proposal nobody implemented — is left alone rather than
+  /// guessed at, because the two prefixes mean opposite things and picking
+  /// wrong forbids exactly what the sign permits.
+  static bool _isBan(String value) {
+    final trimmed = value.trimLeft();
+    return trimmed.startsWith('only') || trimmed.startsWith('no');
   }
 
   /// Sentinel: the member names a way this graph does not carry.
@@ -428,6 +469,25 @@ class OsmConverter {
       routing,
       geo.turnRestrictions,
     );
+
+    // Folded back into the reading stats, because a restriction dropped *here*
+    // is as unenforced as one the reader refused — and `contradictory` is only
+    // detectable at this stage, which is why it read zero on every build
+    // before this.
+    final split = TurnRestrictionSplitter.lastStats;
+    final read = _lastRestrictionStats;
+    if (split != null && read != null) {
+      _lastRestrictionStats = TurnRestrictionStats(
+        accepted: split.applied,
+        skippedViaWay: read.skippedViaWay,
+        unresolvedMember:
+            read.unresolvedMember + split.unresolved + split.inert,
+        ambiguousMember: read.ambiguousMember,
+        contradictory: split.contradictory,
+        excepted: read.excepted,
+        conditions: read.conditions,
+      );
+    }
 
     if (compress) routing = compressor.compress(routing);
     final tree = KdTree.build(routing);

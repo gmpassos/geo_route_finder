@@ -300,7 +300,20 @@ class GraphCompressor {
       splitParent = Int32List(n)..fillRange(0, n, -1);
       for (var i = 0; i < n; i++) {
         final parent = oldSplitParent[sorted[i]];
-        if (parent >= 0) splitParent[i] = remap[parent] ?? -1;
+        if (parent < 0) continue;
+
+        final remapped = remap[parent];
+        // A pinned parent can still vanish — island removal can drop its whole
+        // component, and a chain walk that returns to its start is discarded.
+        // Silently writing -1 there would promote the copy to a real junction:
+        // `isSplitCopy` goes false, the KD-tree starts offering it as a place
+        // to snap to, and a route can begin on one arm of a junction. Asserting
+        // is right because the alternative is a wrong answer nothing reports.
+        assert(
+          remapped != null,
+          'a split copy survived compression but its parent did not',
+        );
+        splitParent[i] = remapped ?? -1;
       }
     }
 
@@ -311,7 +324,18 @@ class GraphCompressor {
     merged.sort((a, b) {
       if (a.newSource != b.newSource) return a.newSource - b.newSource;
       if (a.newTarget != b.newTarget) return a.newTarget - b.newTarget;
-      return a.dist.compareTo(b.dist);
+      final byDist = a.dist.compareTo(b.dist);
+      if (byDist != 0) return byDist;
+      // Total, for the same reason the vertex sort above is: `List.sort` is
+      // not stable, so two parallel merged edges agreeing on source, target
+      // and distance would order arbitrarily between runs and break
+      // byte-identical output. The split makes parallel edges *more* likely,
+      // since a copy duplicates its parent's exits.
+      final byTime = a.time.compareTo(b.time);
+      if (byTime != 0) return byTime;
+      final byCondition = (a.condition ?? '').compareTo(b.condition ?? '');
+      if (byCondition != 0) return byCondition;
+      return a.geometry.length.compareTo(b.geometry.length);
     });
 
     final em = merged.length;

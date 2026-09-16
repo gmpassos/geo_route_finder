@@ -39,7 +39,10 @@ class TurnRestrictionSplitter {
   /// Returns [g] with restricted junctions split, or [g] itself when there is
   /// nothing to do.
   RoutingGraph split(RoutingGraph g, List<GeoTurnRestriction> restrictions) {
-    if (restrictions.isEmpty) return g;
+    if (restrictions.isEmpty) {
+      lastStats = const TurnRestrictionSplitStats();
+      return g;
+    }
 
     final vertexOf = <int, int>{};
     for (var v = 0; v < g.nodeCount; v++) {
@@ -50,20 +53,31 @@ class TurnRestrictionSplitter {
     // one approach — "no left turn" and "no U-turn" on the same arm — and they
     // have to be resolved together into a single permitted set.
     final byApproach = <(int via, int inEdge), List<GeoTurnRestriction>>{};
+    var unresolved = 0;
 
     for (final r in restrictions) {
       final via = vertexOf[r.viaNodeId];
       final from = vertexOf[r.fromNodeId];
       final to = vertexOf[r.toNodeId];
-      if (via == null || from == null || to == null) continue;
+      if (via == null || from == null || to == null) {
+        // A node the profile's filtering removed. Counted rather than dropped
+        // in silence: the restriction was read, resolved, and is not enforced,
+        // which is the number a build report exists to state.
+        unresolved++;
+        continue;
+      }
 
       final inEdge = _edgeBetween(g, from, via);
-      if (inEdge < 0) continue;
+      if (inEdge < 0) {
+        // The approach itself is not traversable — a one-way pointing the other
+        // way, or a way this profile cannot use. The restriction is moot, but
+        // it is still one that was read and not applied.
+        unresolved++;
+        continue;
+      }
 
       byApproach.putIfAbsent((via, inEdge), () => []).add(r);
     }
-
-    if (byApproach.isEmpty) return g;
 
     // One copy per (junction, approach), never shared between approaches even
     // when their permitted sets happen to match. A shared copy would have two
@@ -71,20 +85,67 @@ class TurnRestrictionSplitter {
     // compressor contracts — and contracting it splices the first approach to
     // the second's exit, fabricating a turn neither sign allowed.
     final copies = <_Copy>[];
+    var applied = 0;
+    var contradictory = 0;
+    var inert = 0;
 
     for (final entry in byApproach.entries) {
       final (via, inEdge) = entry.key;
 
+      final exits = g.adjOffset[via + 1] - g.adjOffset[via];
       final allowed = _permittedExits(g, via, entry.value, vertexOf);
-      if (allowed == null) continue;
 
+      if (allowed == null) {
+        // Two `only_*` signs with no exit in common, or a `no` and an `only`
+        // naming the same one. The source contradicts itself and honouring it
+        // would strand the approach entirely.
+        //
+        // Counted in restrictions rather than in copies, like every other
+        // number here, so that a report adds up against what was read. One
+        // approach can carry several signs, and saying "1 contradictory" for
+        // three of them understates the data problem it is there to surface.
+        contradictory += entry.value.length;
+        continue;
+      }
+
+      // A copy that permits exactly what its parent does restricts nothing.
+      //
+      // It happens whenever a restriction's `to` matches no exit — a way this
+      // profile filtered out, or a first segment the converter dropped — and
+      // for an `only_*` it is doubly wasteful: the restriction has no effect
+      // *and* the copy still costs a vertex, a duplicate of every exit edge,
+      // and a pin that keeps the parent from ever compressing away.
+      if (allowed.length == exits && !allowed.values.any((c) => c != null)) {
+        inert += entry.value.length;
+        continue;
+      }
+
+      applied += entry.value.length;
       copies.add(_Copy(via: via, inEdge: inEdge, allowed: allowed));
     }
+
+    // Assigned on every path, including the ones that return early. It is
+    // static, so a stale value from the previous build is not an absence — it
+    // is a wrong number attributed to this one.
+    lastStats = TurnRestrictionSplitStats(
+      applied: applied,
+      unresolved: unresolved,
+      contradictory: contradictory,
+      inert: inert,
+      copies: copies.length,
+    );
 
     if (copies.isEmpty) return g;
 
     return _rebuild(g, copies);
   }
+
+  /// What the most recent [split] did, or null.
+  ///
+  /// Not on the instance by accident: the splitter is stateless and shared as
+  /// a `const`, so this is deliberately the one mutable thing about it — the
+  /// alternative is a return type nobody downstream wants to unwrap.
+  static TurnRestrictionSplitStats? lastStats;
 
   /// Which of [via]'s outgoing edges an approach may still take, or null when
   /// the restrictions leave nothing to keep.
@@ -195,10 +256,9 @@ class TurnRestrictionSplitter {
       if (at >= 0) return at + 1;
 
       if (conditions.length + 1 >= RoutingGraph.conditionOverflowIndex) {
-        while (conditions.length < RoutingGraph.conditionOverflowIndex - 1) {
-          conditions.add(RoutingGraph.overflowCondition);
-        }
-        if (conditions.length < RoutingGraph.conditionOverflowIndex) {
+        // Pad up to the sentinel slot so that index 255 has an entry behind it
+        // — the table is 1-based, so the sentinel is the 255th element.
+        while (conditions.length < RoutingGraph.conditionOverflowIndex) {
           conditions.add(RoutingGraph.overflowCondition);
         }
         return RoutingGraph.conditionOverflowIndex;
@@ -280,6 +340,51 @@ class TurnRestrictionSplitter {
       conditions: conditions,
     );
   }
+}
+
+/// What a [TurnRestrictionSplitter.split] actually did.
+///
+/// The counts that are *not* `applied` are the point. A restriction the graph
+/// does not enforce is a turn the router may still propose, and until now
+/// those two cases vanished without trace — `TurnRestrictionStats` even
+/// declared a `contradictory` field that nothing ever assigned, so it read
+/// zero on every build no matter what the data held.
+/// Every count except [copies] is in *restrictions*, so that a build report adds
+/// up against the number the reader handed over. One approach often carries
+/// several signs, and counting approaches instead would report "1 contradictory"
+/// for three unenforced restrictions.
+class TurnRestrictionSplitStats {
+  /// Restrictions the graph now enforces as topology.
+  final int applied;
+
+  /// Restrictions whose junction, approach or exit is not in this graph —
+  /// filtered out by the profile, or on the far side of the extract's edge.
+  final int unresolved;
+
+  /// Restrictions on an approach whose signs cannot all be obeyed at once, so
+  /// none of them were.
+  final int contradictory;
+
+  /// Restrictions that named an exit the junction does not have, so the copy
+  /// would have permitted exactly what its parent does.
+  final int inert;
+
+  /// Junction copies made — one per (junction, restricted approach), which is
+  /// the cost in vertices rather than a count of restrictions.
+  final int copies;
+
+  const TurnRestrictionSplitStats({
+    this.applied = 0,
+    this.unresolved = 0,
+    this.contradictory = 0,
+    this.inert = 0,
+    this.copies = 0,
+  });
+
+  @override
+  String toString() =>
+      'TurnRestrictionSplitStats($applied applied in $copies copies, '
+      '$unresolved unresolved, $contradictory contradictory, $inert inert)';
 }
 
 /// One junction copy: the approach that lands on it, and the exits it keeps.

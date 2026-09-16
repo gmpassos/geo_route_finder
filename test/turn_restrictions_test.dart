@@ -148,6 +148,57 @@ void main() {
       expect(converter.lastRestrictionStats!.accepted, equals(1));
     });
 
+    test('both tags on one relation are two signs, not one', () async {
+      // A junction can carry a permanent sign and a timed plate that forbid
+      // *different* movements. Reading the ban from `restriction` and the
+      // timetable from `restriction:conditional` makes one record whose ban is
+      // permanent and whose window is not — so outside the window the
+      // always-on restriction stops applying and the router offers exactly the
+      // turn the fixed sign forbids.
+      final graph = await _read(
+        _junction(
+          restriction: const {
+            'type': 'restriction',
+            'restriction': 'no_left_turn',
+            'restriction:conditional': 'only_straight_on @ (Sa,Su)',
+          },
+        ),
+      );
+
+      expect(graph.turnRestrictions, hasLength(2));
+
+      final permanent = graph.turnRestrictions
+          .where((r) => !r.isConditional)
+          .single;
+      expect(permanent.isOnly, isFalse);
+      expect(permanent.condition, isNull);
+
+      final timed = graph.turnRestrictions.where((r) => r.isConditional).single;
+      expect(timed.condition, equals('only_straight_on @ (Sa,Su)'));
+      expect(
+        timed.isOnly,
+        isTrue,
+        reason: 'the timed sign states its own movement; it inherits nothing',
+      );
+    });
+
+    test('an unreadable tag does not take the readable one down', () async {
+      // Judged one value at a time: a junction whose permanent tag is a typo
+      // still has a timed sign standing at it.
+      final graph = await _read(
+        _junction(
+          restriction: const {
+            'type': 'restriction',
+            'restriction': 'left_turn_prohibited',
+            'restriction:conditional': 'no_left_turn @ (Sa,Su)',
+          },
+        ),
+      );
+
+      expect(graph.turnRestrictions, hasLength(1));
+      expect(graph.turnRestrictions.single.isConditional, isTrue);
+    });
+
     test('reads `type=restriction:<mode>` the same way', () async {
       // The same shape with a mode attached, which `startsWith` catches.
       final graph = await _read(
@@ -1089,6 +1140,221 @@ void main() {
 
       expect(g.isSplitCopy(snapped.node), isFalse);
       expect(g.originalId[snapped.node], equals(3));
+    });
+
+    test('signs that contradict each other are counted, not obeyed', () async {
+      // "only straight on" and "no straight on" from the same arm. Honouring
+      // both strands the approach; honouring either invents a sign. The only
+      // honest move is to enforce neither and say so.
+      final base = crossroads();
+      final g = split(
+        GeoGraph(
+          nodes: base.nodes,
+          edges: base.edges,
+          turnRestrictions: const [
+            GeoTurnRestriction(
+              fromNodeId: 2,
+              viaNodeId: 3,
+              toNodeId: 4,
+              isOnly: true,
+            ),
+            GeoTurnRestriction(
+              fromNodeId: 2,
+              viaNodeId: 3,
+              toNodeId: 4,
+              isOnly: false,
+            ),
+          ],
+        ),
+      );
+
+      expect(
+        g.splitParent,
+        isNull,
+        reason: 'the approach must not be stranded',
+      );
+
+      final stats = TurnRestrictionSplitter.lastStats!;
+      expect(stats.applied, isZero);
+      expect(
+        stats.contradictory,
+        equals(2),
+        reason:
+            'counted in restrictions, so the report adds up against what '
+            'was read — not in approaches, which would say 1 for both signs',
+      );
+    });
+
+    test('a restriction naming an exit the junction lacks is inert', () async {
+      // Node 1 is not an exit of node 3, so the ban removes nothing and the
+      // copy would permit exactly what its parent does — a vertex, a duplicate
+      // of every exit edge, and a pin against compression, all for no effect.
+      final g = split(crossroads(restriction: 'no', toNode: 1));
+
+      expect(g.splitParent, isNull);
+      expect(TurnRestrictionSplitter.lastStats!.inert, equals(1));
+    });
+
+    test('a restriction this graph has no nodes for is counted', () async {
+      final g = split(crossroads(restriction: 'no', toNode: 999));
+
+      expect(g.splitParent, isNull);
+      expect(TurnRestrictionSplitter.lastStats!.unresolved, equals(1));
+    });
+
+    test('the counts describe this build, not the one before it', () async {
+      // `lastStats` is static by design, which makes every early return a
+      // chance to leave the previous build's numbers standing — and they do not
+      // read as stale, they read as this build's.
+      split(crossroads(restriction: 'no'));
+      expect(TurnRestrictionSplitter.lastStats!.applied, equals(1));
+
+      split(crossroads(restriction: 'no', toNode: 999));
+      expect(TurnRestrictionSplitter.lastStats!.applied, isZero);
+      expect(TurnRestrictionSplitter.lastStats!.unresolved, equals(1));
+
+      split(crossroads());
+      expect(TurnRestrictionSplitter.lastStats!.unresolved, isZero);
+    });
+
+    test('a condition containing a newline survives the round trip', () async {
+      // `restriction:conditional` is free-form OSM text. The table used to be
+      // newline-joined, so a value with a newline in it split into two entries
+      // and shifted every later index by one — the file stayed self-consistent,
+      // the CRC still matched, and the only symptom was conditional turns being
+      // judged against another junction's timetable.
+      final g = split(
+        crossroads(restriction: 'no', condition: 'no_left_turn @\n(Sa,Su)'),
+      );
+
+      final back = const GraphDeserializer().deserializeGraph(
+        const GraphSerializer().serializeGraph(g),
+      );
+
+      expect(back.conditions, equals(g.conditions));
+      expect(back.conditions.single, equals('no_left_turn @\n(Sa,Su)'));
+    });
+
+    test('an edge naming a condition that is not there is refused', () async {
+      // The index is one byte and the table is separate, so the two can
+      // disagree. Caught at load, because `conditionOf` is called inside the
+      // relaxation loops — where the choice is between throwing mid-search and
+      // reading a neighbouring junction's timetable.
+      final g = split(
+        crossroads(restriction: 'no', condition: 'no_left_turn @ (Sa,Su)'),
+      );
+
+      final cond = Uint8List.fromList(g.adjCond!);
+      cond[cond.indexWhere((c) => c != 0)] = 9;
+
+      final bytes = const GraphSerializer().serializeGraph(
+        RoutingGraph(
+          lat: g.lat,
+          lon: g.lon,
+          originalId: g.originalId,
+          adjOffset: g.adjOffset,
+          adjTarget: g.adjTarget,
+          adjTime: g.adjTime,
+          adjDist: g.adjDist,
+          adjToll: g.adjToll,
+          adjSignal: g.adjSignal,
+          geomCoords: g.geomCoords,
+          geomOffset: g.geomOffset,
+          splitParent: g.splitParent,
+          adjCond: cond,
+          conditions: g.conditions,
+        ),
+      );
+
+      expect(
+        () => const GraphDeserializer().deserializeGraph(bytes),
+        throwsA(isA<GraphFormatException>()),
+      );
+    });
+
+    test('a truncated condition table is refused', () async {
+      final g = split(
+        crossroads(restriction: 'no', condition: 'no_left_turn @ (Sa,Su)'),
+      );
+      final bytes = const GraphSerializer().serializeGraph(g);
+
+      // Shrink the declared blob so the last expression runs off the end.
+      final bd = ByteData.view(bytes.buffer);
+      bd.setInt32(28, bd.getInt32(28, Endian.little) - 4, Endian.little);
+
+      expect(
+        () => const GraphDeserializer().deserializeGraph(bytes),
+        throwsA(isA<GraphFormatException>()),
+      );
+    });
+
+    test('an index entry outside the graph is refused', () async {
+      // The likeliest cause is a stale `.index` beside a graph that has since
+      // been rebuilt smaller. Unchecked, the entry lands as a subscript deep
+      // inside a nearest-neighbour descent, and the error names neither file.
+      final g = split(crossroads(restriction: 'no'));
+      final bytes = const GraphSerializer().serializeIndex(KdTree.build(g));
+
+      ByteData.view(bytes.buffer).setInt32(24, g.nodeCount, Endian.little);
+
+      expect(
+        () => const GraphDeserializer().deserializeIndex(bytes, g),
+        throwsA(isA<GraphFormatException>()),
+      );
+    });
+
+    test('an index that claims more entries than it has is refused', () async {
+      final g = split(crossroads(restriction: 'no'));
+      final bytes = const GraphSerializer().serializeIndex(KdTree.build(g));
+
+      ByteData.view(bytes.buffer).setInt32(12, 1 << 20, Endian.little);
+
+      expect(
+        () => const GraphDeserializer().deserializeIndex(bytes, g),
+        throwsA(isA<GraphFormatException>()),
+      );
+    });
+
+    test('saving a graph splits it, exactly as compiling one does', () async {
+      // `saveGraph` builds and indexes on its own, so it was the one path that
+      // never ran the splitter — and the loss was silent, because the graph it
+      // wrote routes perfectly well while offering every turn the signs forbid.
+      final dir = Directory.systemTemp.createTempSync('grf_save');
+      try {
+        final storage = LocalFileStorage(directory: dir.path);
+        await storage.saveGraph('x', crossroads(restriction: 'no'));
+
+        final compiled = await storage.loadCompiled('x');
+        final g = compiled!.graph;
+
+        expect(g.splitParent, isNotNull);
+
+        final arrival = arrivalOf(g, 2, 3);
+        expect(g.isSplitCopy(arrival), isTrue);
+        expect(exitsFrom(g, arrival), isNot(contains(4)));
+      } finally {
+        dir.deleteSync(recursive: true);
+      }
+    });
+
+    test('a split graph is refused as a GeoGraph, not collapsed', () async {
+      // A `GeoGraph` is keyed by OSM id and the copies share their parent's,
+      // so they would merge back into it and take every restriction with them.
+      // The collapsed graph routes fine and is wrong, which is the case for
+      // refusing rather than returning it.
+      final dir = Directory.systemTemp.createTempSync('grf_load');
+      try {
+        final storage = LocalFileStorage(directory: dir.path);
+        await storage.saveGraph('x', crossroads(restriction: 'no'));
+
+        expect(storage.loadGraph('x'), throwsA(isA<StateError>()));
+
+        // And an unrestricted graph still round-trips, as it always did.
+        await storage.saveGraph('plain', crossroads());
+        expect(await storage.loadGraph('plain'), isNotNull);
+      } finally {
+        dir.deleteSync(recursive: true);
+      }
     });
   });
 }

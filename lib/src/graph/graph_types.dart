@@ -146,7 +146,19 @@ class RoutingGraph {
   /// The condition forbidding edge [e], or null when it is unconditional.
   String? conditionOf(int e) {
     final index = adjCond?[e] ?? 0;
-    return index == 0 ? null : conditions[index - 1];
+    if (index == 0) return null;
+
+    if (index > conditions.length) {
+      // Not reachable through either producer: the splitter allocates every
+      // index it writes, and the deserializer refuses a graph whose edges
+      // point past its table. Kept because this runs inside the relaxation
+      // loops, where throwing would abandon a whole search over one bad byte.
+      // An index with no expression behind it bans the turn outright, which is
+      // the reading that cannot hand back an illegal route.
+      assert(false, 'edge $e names condition $index of ${conditions.length}');
+      return overflowCondition;
+    }
+    return conditions[index - 1];
   }
 
   int get nodeCount => lat.length;
