@@ -71,6 +71,14 @@ class OsmConverter {
   /// because a caller with no use for restrictions should not pay for them.
   final bool readTurnRestrictions;
 
+  /// Whether to read `barrier=` nodes, so a route does not drive through a
+  /// bollard or a locked gate.
+  ///
+  /// Nothing read them before, so every barrier in the city was a plain vertex
+  /// and every route passed through it. Like [readSignals] this rides along on
+  /// the pass that already decodes node tags, so the only cost is the reading.
+  final bool readBarriers;
+
   OsmConverter({
     this.parser = const OsmPbfParser(),
     this.builder = const GraphBuilder(),
@@ -79,6 +87,7 @@ class OsmConverter {
     this.compress = true,
     this.readSignals = true,
     this.readTurnRestrictions = true,
+    this.readBarriers = true,
   }) : compressor = compressor ?? GraphCompressor();
 
   /// Why restrictions were dropped on the most recent [toGeoGraph], or null.
@@ -166,6 +175,7 @@ class OsmConverter {
     // decline.
     final coords = <int, GeoNode>{};
     final signalNodes = <int>{};
+    final barrierNodes = <int, Map<String, String>>{};
 
     await parser.parse(
       inputFile,
@@ -173,14 +183,22 @@ class OsmConverter {
       onNode: (node) {
         if (neededNodes.contains(node.id)) coords[node.id] = node;
       },
-      onTaggedNode: !readSignals
+      onTaggedNode: !readSignals && !readBarriers
           ? null
           : (node) {
               // Only junctions this profile's network actually reaches. A
               // light on a street a car may not use is not a delay a car will
               // ever pay.
               if (!neededNodes.contains(node.id)) return;
-              if (isSignalNode(node.tags)) signalNodes.add(node.id);
+              if (readSignals && isSignalNode(node.tags)) {
+                signalNodes.add(node.id);
+              }
+              // Kept whole rather than resolved here: whether a gate stops
+              // this profile depends on the class of the way it sits on, and
+              // one node can sit on more than one.
+              if (readBarriers && node.tags.containsKey('barrier')) {
+                barrierNodes[node.id] = node.tags;
+              }
             },
     );
 
@@ -192,37 +210,39 @@ class OsmConverter {
       final tolls = _tollOf(way) ? 1 : 0;
       final accessOnly =
           WayAccessRules.of(way.tags, profile) == WayAccess.accessOnly;
-      final ids = way.nodeIds;
-      for (var i = 0; i + 1 < ids.length; i++) {
-        final a = coords[ids[i]];
-        final b = coords[ids[i + 1]];
-        if (a == null || b == null) continue;
-        final dist = haversineMeters(a.lat, a.lon, b.lat, b.lon);
-        if (dist <= 0) continue;
-        if (dir == _OneWay.backward) {
-          edges.add(
-            GeoEdge(
-              sourceId: b.id,
-              targetId: a.id,
-              distanceMeters: dist,
-              speedKmh: speed,
-              oneWay: true,
-              tolls: tolls,
-              accessOnly: accessOnly,
-            ),
-          );
-        } else {
-          edges.add(
-            GeoEdge(
-              sourceId: a.id,
-              targetId: b.id,
-              distanceMeters: dist,
-              speedKmh: speed,
-              oneWay: dir == _OneWay.forward,
-              tolls: tolls,
-              accessOnly: accessOnly,
-            ),
-          );
+
+      for (final ids in _severAtBarriers(way, barrierNodes, coords)) {
+        for (var i = 0; i + 1 < ids.length; i++) {
+          final a = coords[ids[i]];
+          final b = coords[ids[i + 1]];
+          if (a == null || b == null) continue;
+          final dist = haversineMeters(a.lat, a.lon, b.lat, b.lon);
+          if (dist <= 0) continue;
+          if (dir == _OneWay.backward) {
+            edges.add(
+              GeoEdge(
+                sourceId: b.id,
+                targetId: a.id,
+                distanceMeters: dist,
+                speedKmh: speed,
+                oneWay: true,
+                tolls: tolls,
+                accessOnly: accessOnly,
+              ),
+            );
+          } else {
+            edges.add(
+              GeoEdge(
+                sourceId: a.id,
+                targetId: b.id,
+                distanceMeters: dist,
+                speedKmh: speed,
+                oneWay: dir == _OneWay.forward,
+                tolls: tolls,
+                accessOnly: accessOnly,
+              ),
+            );
+          }
         }
       }
     }
@@ -449,6 +469,76 @@ class OsmConverter {
     }
     return kind;
   }
+
+  /// Splits a way wherever a barrier stops this profile, into the fragments
+  /// the graph should actually carry.
+  ///
+  /// The barrier node is duplicated rather than dropped: the fragment before
+  /// it ends *at* the gate, and the fragment after it starts at a twin with
+  /// the same coordinates and a synthetic id. Nothing passes through, and a
+  /// rider can still be routed right up to it from either side — which for a
+  /// delivery is usually the address itself, a condominium entrance being the
+  /// obvious case.
+  ///
+  /// Twins take negative ids, which OSM never issues, so they cannot collide
+  /// with a real node. `RouteFinder` treats vertices sharing a coordinate as
+  /// aliases of one another, so snapping to a gate finds whichever side of it
+  /// the route can actually reach.
+  List<List<int>> _severAtBarriers(
+    GeoWay way,
+    Map<int, Map<String, String>> barriers,
+    Map<int, GeoNode> coords,
+  ) {
+    final ids = way.nodeIds;
+    if (barriers.isEmpty) return [ids];
+
+    final highway = way.tags['highway'] ?? '';
+
+    bool blocks(int id) {
+      final tags = barriers[id];
+      if (tags == null) return false;
+      return !BarrierRules.passesThrough(tags, profile, highway: highway);
+    }
+
+    if (!ids.any(blocks)) return [ids];
+
+    final fragments = <List<int>>[];
+    var current = <int>[];
+
+    for (final id in ids) {
+      if (!blocks(id)) {
+        current.add(id);
+        continue;
+      }
+
+      if (current.isNotEmpty) {
+        // The way up to here still reaches the gate.
+        current.add(id);
+        fragments.add(current);
+      }
+
+      final source = coords[id];
+      if (source == null) {
+        current = <int>[];
+        continue;
+      }
+
+      final twinId = _nextTwinId--;
+      coords[twinId] = GeoNode(id: twinId, lat: source.lat, lon: source.lon);
+      barrierTwins++;
+      current = <int>[twinId];
+    }
+
+    if (current.length >= 2) fragments.add(current);
+    return fragments;
+  }
+
+  /// Next synthetic id for a barrier twin. Negative, because OSM ids are not.
+  int _nextTwinId = -1;
+
+  /// How many barrier twins the last conversion created — one per severed
+  /// crossing, so a build can say how many gates it actually shut.
+  int barrierTwins = 0;
 
   /// Sentinel: the member names a way this graph does not carry.
   static const _memberUnresolved = -1;

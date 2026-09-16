@@ -205,25 +205,55 @@ abstract class GraphRouteFinder implements RouteFinder {
     _prepared = true;
   }
 
-  /// For each real junction, the split copies that stand in for it.
+  /// For each vertex, the others that stand for the same place.
   ///
-  /// Empty for every graph without restrictions, and absent for every vertex
-  /// that is not a split junction — so the cost is paid only where it is owed.
+  /// Two kinds, because one real place can be more than one vertex:
+  ///
+  /// * **split copies**, from a turn restriction — a junction as approached
+  ///   from the restricted arm;
+  /// * **barrier twins**, from a gate or a bollard — the way was severed
+  ///   there, so the two sides of it are separate vertices at one coordinate.
+  ///
+  /// Absent for every vertex that is neither, so the cost is paid only where
+  /// it is owed. Without the second kind, snapping a destination to a severed
+  /// gate picks a side arbitrarily, and a route from the other side reports no
+  /// route at all — a condominium entrance being the common case.
   Map<int, List<int>> _aliases = const {};
 
   void _buildAliases() {
     final g = _graph!;
+    final byParent = <int, List<int>>{};
+
     final splitParent = g.splitParent;
-    if (splitParent == null) {
-      _aliases = const {};
-      return;
+    if (splitParent != null) {
+      for (var v = 0; v < g.nodeCount; v++) {
+        final parent = splitParent[v];
+        if (parent >= 0) byParent.putIfAbsent(parent, () => []).add(v);
+      }
     }
 
-    final byParent = <int, List<int>>{};
+    // Vertices sharing an exact coordinate.
+    //
+    // Only barrier twins can: the converter copies the gate's position
+    // verbatim. A split copy also sits on its parent, but that pair is already
+    // in the map above, so the two sources agree rather than fight. Grouped on
+    // the raw pair rather than by distance, which would be a spatial query
+    // over the whole graph to answer a question about a handful of vertices.
+    final byPlace = <String, List<int>>{};
     for (var v = 0; v < g.nodeCount; v++) {
-      final parent = splitParent[v];
-      if (parent >= 0) byParent.putIfAbsent(parent, () => []).add(v);
+      byPlace.putIfAbsent('${g.lat[v]},${g.lon[v]}', () => []).add(v);
     }
+
+    for (final together in byPlace.values) {
+      if (together.length < 2) continue;
+      for (final v in together) {
+        final list = byParent.putIfAbsent(v, () => []);
+        for (final w in together) {
+          if (w != v && !list.contains(w)) list.add(w);
+        }
+      }
+    }
+
     _aliases = byParent;
   }
 

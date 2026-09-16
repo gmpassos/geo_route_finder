@@ -222,3 +222,127 @@ abstract final class WayAccessRules {
     return value == 'yes' || value == 'designated' || value == 'permissive';
   }
 }
+
+/// Reads a `barrier=` node and says whether a profile may pass through it.
+///
+/// Barriers are *node* tags on a way's vertices, read on the same pass that
+/// already reads traffic signals. Nothing read them before, so a bollard, a
+/// locked gate and a fire barrier were plain vertices and every route drove
+/// straight through them.
+abstract final class BarrierRules {
+  /// Barriers that stop a motor vehicle and let a bicycle past.
+  ///
+  /// Their whole purpose. A bollard exists to keep cars out of somewhere
+  /// people cycle and walk.
+  static const stopsMotorOnly = {
+    'bollard',
+    'block',
+    'chain',
+    'jersey_barrier',
+    'planter',
+    'debris',
+    'bus_trap',
+    'sump_buster',
+    'height_restrictor',
+    'motorcycle_barrier',
+  };
+
+  /// Barriers nobody rides or drives through.
+  static const stopsEveryone = {
+    'cycle_barrier',
+    'stile',
+    'kissing_gate',
+    'turnstile',
+    'full-height_turnstile',
+    'wall',
+    'fence',
+    'hedge',
+    'ditch',
+  };
+
+  /// Barriers that slow traffic without stopping it.
+  ///
+  /// Passable by design: you queue, you pay, you drive on.
+  static const passable = {
+    'toll_booth',
+    'border_control',
+    'checkpoint',
+    'sally_port',
+    'cattle_grid',
+    'entrance',
+    'arch',
+    'gateway',
+    'no',
+  };
+
+  /// Barriers whose default follows the road they sit on.
+  ///
+  /// Gates are the most common barrier by a wide margin and the most
+  /// ambiguous: the same tag covers a condominium entrance and a farm gate
+  /// standing open on a public lane. Rather than guess once for both, the road
+  /// decides — see [passesThrough].
+  static const followsTheRoad = {'gate', 'lift_gate', 'swing_gate'};
+
+  /// Highway classes on which an untagged gate is read as a property
+  /// boundary rather than a road feature.
+  static const privateIshHighways = {'service', 'track'};
+
+  /// Whether [profile] may pass **through** a node carrying [tags], on a way
+  /// of class [highway].
+  ///
+  /// Not the same as whether the node can be *reached*: the converter severs
+  /// the way at an impassable barrier and leaves a vertex on each side, so a
+  /// rider is still routed up to the gate. What this decides is whether a
+  /// route may continue past it.
+  ///
+  /// Access tags on the node win over every default, read with the same
+  /// key precedence as a way — so `bollard` + `motor_vehicle=yes` passes, and
+  /// `gate` + `locked=yes` does not.
+  static bool passesThrough(
+    Map<String, String> tags,
+    VehicleProfile profile, {
+    required String highway,
+  }) {
+    final barrier = tags['barrier']?.toLowerCase();
+    if (barrier == null) return true;
+
+    // A locked gate is a wall, whatever else the tags say.
+    if (tags['locked']?.toLowerCase() == 'yes') return false;
+
+    final explicit = WayAccessRules.of({'highway': highway, ...tags}, profile);
+    if (explicit == WayAccess.blocked) return false;
+
+    // An access value that names this profile is the mapper answering the
+    // question directly, so it beats every default below.
+    if (_hasExplicitAccess(tags, profile)) return true;
+
+    if (passable.contains(barrier)) return true;
+    if (stopsEveryone.contains(barrier)) return false;
+    if (stopsMotorOnly.contains(barrier)) return !profile.isMotorVehicle;
+
+    if (followsTheRoad.contains(barrier)) {
+      // A gate on a driveway or a track is a property boundary; a gate on a
+      // residential street or better is usually one that stands open. This
+      // puts the block where private areas actually are, without cutting a
+      // public street on a guess.
+      return !privateIshHighways.contains(highway);
+    }
+
+    // Something nobody here recognises. Unlike an unreadable *access value* on
+    // a way — where one typo could demote an arterial — an unknown `barrier=`
+    // is a mapper saying a physical thing stands in the road. Over-blocking
+    // costs a detour; under-blocking sends a rider into something they cannot
+    // see on the map.
+    return false;
+  }
+
+  static bool _hasExplicitAccess(
+    Map<String, String> tags,
+    VehicleProfile profile,
+  ) {
+    for (final key in profile.accessKeys) {
+      if (tags.containsKey(key)) return true;
+    }
+    return false;
+  }
+}
