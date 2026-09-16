@@ -18,6 +18,14 @@ void main() {
   DateTime sunday(int hour, [int minute = 0]) =>
       DateTime(2026, 9, 13, hour, minute);
 
+  /// Saturday 2026-09-12.
+  DateTime saturday(int hour, [int minute = 0]) =>
+      DateTime(2026, 9, 12, hour, minute);
+
+  /// Wednesday 2026-09-16.
+  DateTime wednesday(int hour, [int minute = 0]) =>
+      DateTime(2026, 9, 16, hour, minute);
+
   bool applies(String expression, DateTime? at) =>
       ConditionalRestriction.appliesAt(expression, at);
 
@@ -97,10 +105,27 @@ void main() {
       expect(applies(night, monday(12)), isFalse);
     });
 
-    test('a day range wrapping the end of the week', () {
+    test('a day range ending the week', () {
+      // `Sa-Su` is 5..6 and does not wrap — the ordinary case, kept because it
+      // is the commonest weekend selector in the data.
       const weekend = 'no_left_turn @ (Sa-Su)';
+      expect(applies(weekend, saturday(8)), isTrue);
       expect(applies(weekend, sunday(8)), isTrue);
       expect(applies(weekend, monday(8)), isFalse);
+    });
+
+    test('a day range wrapping past Sunday', () {
+      // `Sa-Mo` runs 5..0, so the comparison inverts: a day is inside when it
+      // is at or after the start *or* at or before the end. Reading it as an
+      // ordinary range makes it match nothing at all, and a restriction that
+      // matches nothing is a turn left open on the three days it names.
+      const longWeekend = 'no_left_turn @ (Sa-Mo)';
+
+      expect(applies(longWeekend, saturday(8)), isTrue);
+      expect(applies(longWeekend, sunday(8)), isTrue);
+      expect(applies(longWeekend, monday(8)), isTrue);
+
+      expect(applies(longWeekend, wednesday(8)), isFalse);
     });
 
     test('24/7 is always in force', () {

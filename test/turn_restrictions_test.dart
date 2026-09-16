@@ -199,6 +199,68 @@ void main() {
       expect(graph.turnRestrictions.single.isConditional, isTrue);
     });
 
+    test('a value that names no movement is not guessed at', () async {
+      // Both tags present, neither readable. The vocabulary is `no_*` and
+      // `only_*`, and they mean opposite things — a value outside it cannot be
+      // leaned one way or the other, so the relation is counted and dropped.
+      //
+      // The prefix test is deliberately loose: anything starting `no` or
+      // `only` counts, so a mistyped `no left turn` is still honoured. That
+      // errs toward keeping a restriction on, which is the direction every
+      // decision here leans. These two values start with neither.
+      final converter = OsmConverter();
+      final path = writeTempPbf(
+        _junction(
+          restriction: const {
+            'type': 'restriction',
+            'restriction': 'left_turn_prohibited',
+            'restriction:conditional': 'weekend_ban @ (Sa,Su)',
+          },
+        ),
+      );
+
+      try {
+        final graph = await converter.toGeoGraph(path);
+        expect(graph.turnRestrictions, isEmpty);
+      } finally {
+        File(path).parent.deleteSync(recursive: true);
+      }
+
+      expect(converter.lastRestrictionStats!.accepted, isZero);
+      expect(converter.lastRestrictionStats!.unresolvedMember, equals(1));
+    });
+
+    test('convert carries restrictions into a plain storage too', () async {
+      // `convert` has two branches. The compiled one is covered by the
+      // end-to-end test; this is the other, where the converter hands a
+      // `GeoGraph` to a storage that is not a `CompiledGraphStorage`. The
+      // restrictions have to travel with it — a `GeoGraph` that arrives
+      // without them produces a router that is confidently wrong.
+      final storage = MemoryStorage();
+      final path = writeTempPbf(
+        _junction(
+          restriction: const {
+            'type': 'restriction',
+            'restriction': 'no_left_turn',
+          },
+        ),
+      );
+
+      try {
+        await OsmConverter().convert(
+          inputFile: path,
+          storage: storage,
+          graphId: 'plain',
+        );
+      } finally {
+        File(path).parent.deleteSync(recursive: true);
+      }
+
+      final stored = await storage.loadGraph('plain');
+      expect(stored!.turnRestrictions, hasLength(1));
+      expect(stored.turnRestrictions.single.viaNodeId, equals(3));
+    });
+
     test('reads `type=restriction:<mode>` the same way', () async {
       // The same shape with a mode attached, which `startsWith` catches.
       final graph = await _read(
@@ -1031,6 +1093,30 @@ void main() {
         ),
         isTrue,
       );
+
+      // The compressor rebuilds the table from scratch, so it has the same
+      // ceiling to saturate at and its own copy of the code that does it. A
+      // graph this size only reaches that branch after compression, which is
+      // the form every shipped graph is in.
+      final compressed = GraphCompressor().compress(g);
+
+      expect(
+        compressed.conditions.length,
+        lessThanOrEqualTo(RoutingGraph.conditionOverflowIndex),
+      );
+      expect(
+        compressed.conditions.last,
+        equals(RoutingGraph.overflowCondition),
+        reason: 'the last slot is the sentinel, not a real expression',
+      );
+
+      for (var e = 0; e < compressed.edgeCount; e++) {
+        expect(
+          compressed.adjCond![e],
+          lessThanOrEqualTo(compressed.conditions.length),
+          reason: 'no edge may index past the table it was rebuilt against',
+        );
+      }
     });
 
     test('the alias loop takes the direct way in, not a lap', () async {
@@ -1063,6 +1149,217 @@ void main() {
         closeTo(1000, 1),
         reason: 'straight in along 1-2-3, not a lap through another arm',
       );
+    });
+
+    /// Two ways in to one restricted junction, so an *alternative* exists.
+    ///
+    ///           2
+    ///          / \
+    ///     7 — 1   4 — 5     way in via 2 is 1000 m, via 3 is 1200 m
+    ///          \ /  \
+    ///           3    6
+    ///
+    /// The ban is "arriving from 2, you may not turn to 5", so the junction
+    /// splits and a route arriving via 2 lands on the copy while one arriving
+    /// via 3 lands on 4 itself. A destination of 4 therefore has two vertices
+    /// a search could legitimately reach.
+    ///
+    /// Node 7 is a stub that exists only to give node 1 a third edge. Without
+    /// it node 1 is degree 2, the chain compressor merges 2-1-3 into one edge,
+    /// and the start of every route below snaps to somewhere else entirely.
+    GeoGraph twoWaysIn({int tollsOnFastRoute = 0}) {
+      const nodes = [
+        GeoNode(id: 1, lat: -23.500, lon: -46.700),
+        GeoNode(id: 2, lat: -23.495, lon: -46.690),
+        GeoNode(id: 3, lat: -23.505, lon: -46.690),
+        GeoNode(id: 4, lat: -23.500, lon: -46.680),
+        GeoNode(id: 5, lat: -23.510, lon: -46.680),
+        GeoNode(id: 6, lat: -23.490, lon: -46.680),
+        GeoNode(id: 7, lat: -23.500, lon: -46.710),
+      ];
+
+      return GeoGraph(
+        nodes: nodes,
+        edges: [
+          const GeoEdge(
+            sourceId: 1,
+            targetId: 7,
+            distanceMeters: 500,
+            speedKmh: 36,
+          ),
+          GeoEdge(
+            sourceId: 1,
+            targetId: 2,
+            distanceMeters: 500,
+            speedKmh: 36,
+            tolls: tollsOnFastRoute,
+          ),
+          GeoEdge(
+            sourceId: 2,
+            targetId: 4,
+            distanceMeters: 500,
+            speedKmh: 36,
+            tolls: tollsOnFastRoute,
+          ),
+          const GeoEdge(
+            sourceId: 1,
+            targetId: 3,
+            distanceMeters: 600,
+            speedKmh: 36,
+          ),
+          const GeoEdge(
+            sourceId: 3,
+            targetId: 4,
+            distanceMeters: 600,
+            speedKmh: 36,
+          ),
+          const GeoEdge(
+            sourceId: 4,
+            targetId: 5,
+            distanceMeters: 500,
+            speedKmh: 36,
+          ),
+          const GeoEdge(
+            sourceId: 4,
+            targetId: 6,
+            distanceMeters: 500,
+            speedKmh: 36,
+          ),
+        ],
+        turnRestrictions: const [
+          GeoTurnRestriction(
+            fromNodeId: 2,
+            viaNodeId: 4,
+            toNodeId: 5,
+            isOnly: false,
+          ),
+        ],
+      );
+    }
+
+    const start = GeoCoordinate(lat: -23.500, lon: -46.700); // node 1
+    const junction = GeoCoordinate(lat: -23.500, lon: -46.680); // node 4
+
+    test('alternatives to a split junction all arrive at it', () async {
+      // `findRoutes` does not reuse `findRoute`'s search: alternatives go
+      // through a *penalized* one, which has its own copy of the alias loop.
+      // Until this test, that copy ran only in its single-target form — so the
+      // branch that picks between a junction and its copies was dead code in
+      // every test, on the path that serves both `avoidTolls` and every
+      // alternative route.
+      final storage = MemoryStorage();
+      await storage.saveGraph('r', twoWaysIn());
+
+      final routes = await DijkstraRouter(
+        storage: storage,
+        graphId: 'r',
+      ).findRoutes(start, junction, maxRoutes: 2);
+
+      expect(routes, hasLength(2));
+
+      // Both actually end at the junction rather than near it, and neither
+      // took a lap to get there. 1-2-4 is 1000 m and 1-3-4 is 1200 m; anything
+      // longer means the search could not call the copy "arriving at 4" and
+      // went round.
+      expect(routes[0].distanceMeters, closeTo(1000, 1));
+      expect(routes[1].distanceMeters, closeTo(1200, 1));
+
+      for (final route in routes) {
+        final last = route.geometry.last;
+        expect(last.lat, closeTo(junction.lat, 1e-9));
+        expect(last.lon, closeTo(junction.lon, 1e-9));
+      }
+    });
+
+    test('alternatives keep avoiding tolls, seeded from the first', () async {
+      // The alternative search starts from the toll-avoidance penalties rather
+      // than from a neutral array, so route 2 steers clear of tolls as well as
+      // route 1. Seeded from a flat array instead, `avoidTolls` would hold for
+      // the first route and quietly lapse for every one after it — which is
+      // the route a rider takes when the first is refused.
+      final storage = MemoryStorage();
+      await storage.saveGraph('r', twoWaysIn(tollsOnFastRoute: 1));
+
+      final routes = await DijkstraRouter(
+        storage: storage,
+        graphId: 'r',
+      ).findRoutes(start, junction, maxRoutes: 2, avoidTolls: true);
+
+      expect(routes, isNotEmpty);
+      expect(
+        routes.first.distanceMeters,
+        closeTo(1200, 1),
+        reason: 'the longer toll-free way in wins',
+      );
+      expect(routes.every((r) => r.tollCount == 0), isTrue);
+    });
+
+    test('a route from a junction to itself is zero, not a lap', () async {
+      // Snapping start and end to the same vertex. Worth pinning here because
+      // the junction has copies: an early return that compared the wrong pair
+      // would send a rider once around the block to arrive where they stand.
+      final storage = MemoryStorage();
+      await storage.saveGraph('r', twoWaysIn());
+
+      final routes = await DijkstraRouter(
+        storage: storage,
+        graphId: 'r',
+      ).findRoutes(junction, junction, maxRoutes: 2);
+
+      expect(routes, hasLength(1));
+      expect(routes.single.distanceMeters, isZero);
+      expect(routes.single.duration, Duration.zero);
+    });
+
+    test('a split copy keeps the geometry of the edges it copies', () async {
+      // The copy duplicates its parent's exit edges, intermediate points and
+      // all. Dropped, the restricted route still costs the right distance and
+      // draws as a straight line through whatever the road actually bends
+      // around — correct arithmetic over a shape that is not the road.
+      final base = crossroads(restriction: 'no');
+
+      // Nodes 70+ appear only as shape points, so the builder folds them into
+      // edge geometry rather than making them vertices. Every arm of the
+      // junction gets one, so no exit of the copy is straight and a dropped
+      // geometry shows up as an empty list.
+      final shapeOf = {2: 72, 4: 74, 5: 75, 6: 76};
+
+      final bent = GeoGraph(
+        nodes: [
+          ...base.nodes,
+          for (final id in shapeOf.values)
+            GeoNode(id: id, lat: -23.5005, lon: -46.6805),
+        ],
+        edges: [
+          for (final e in base.edges)
+            GeoEdge(
+              sourceId: e.sourceId,
+              targetId: e.targetId,
+              distanceMeters: e.distanceMeters,
+              speedKmh: e.speedKmh,
+              tolls: e.tolls,
+              shapePoints: [
+                if (e.sourceId == 3) shapeOf[e.targetId]!,
+                if (e.targetId == 3) shapeOf[e.sourceId]!,
+              ],
+            ),
+        ],
+        turnRestrictions: base.turnRestrictions,
+      );
+
+      final g = split(bent);
+      final arrival = arrivalOf(g, 2, 3);
+
+      expect(g.isSplitCopy(arrival), isTrue);
+
+      for (var e = g.adjOffset[arrival]; e < g.adjOffset[arrival + 1]; e++) {
+        expect(
+          g.geometryOf(e),
+          hasLength(1),
+          reason: 'the copy carries the road shape, not just the endpoints',
+        );
+        expect(g.geometryOf(e).single.lat, closeTo(-23.5005, 1e-9));
+      }
     });
 
     test('survives the compiled pipeline, which is what ships', () async {
@@ -1272,6 +1569,40 @@ void main() {
       );
     });
 
+    test('an index with no expression behind it bans the turn', () async {
+      // The guard inside `conditionOf`, which runs in the relaxation loops.
+      // Unreachable through either producer — the splitter allocates every
+      // index it writes and the deserializer refuses a graph that disagrees
+      // with its table — so it asserts, and falls back to the reading that
+      // cannot hand back an illegal route.
+      final g = split(
+        crossroads(restriction: 'no', condition: 'no_left_turn @ (Sa,Su)'),
+      );
+
+      final cond = Uint8List.fromList(g.adjCond!);
+      final bad = cond.indexWhere((c) => c != 0);
+      cond[bad] = 9;
+
+      final broken = RoutingGraph(
+        lat: g.lat,
+        lon: g.lon,
+        originalId: g.originalId,
+        adjOffset: g.adjOffset,
+        adjTarget: g.adjTarget,
+        adjTime: g.adjTime,
+        adjDist: g.adjDist,
+        adjToll: g.adjToll,
+        adjSignal: g.adjSignal,
+        geomCoords: g.geomCoords,
+        geomOffset: g.geomOffset,
+        splitParent: g.splitParent,
+        adjCond: cond,
+        conditions: g.conditions,
+      );
+
+      expect(() => broken.conditionOf(bad), throwsA(isA<AssertionError>()));
+    });
+
     test('a truncated condition table is refused', () async {
       final g = split(
         crossroads(restriction: 'no', condition: 'no_left_turn @ (Sa,Su)'),
@@ -1285,6 +1616,55 @@ void main() {
       expect(
         () => const GraphDeserializer().deserializeGraph(bytes),
         throwsA(isA<GraphFormatException>()),
+      );
+    });
+
+    test('a condition count the blob cannot hold is refused', () async {
+      // Checked before anything is allocated for it, so a corrupt count is a
+      // format error rather than an out-of-memory.
+      final g = split(
+        crossroads(restriction: 'no', condition: 'no_left_turn @ (Sa,Su)'),
+      );
+      final bytes = const GraphSerializer().serializeGraph(g);
+      final bd = ByteData.view(bytes.buffer);
+
+      // The table sits at the very end of the payload, counted by the header.
+      final condStart = bytes.length - bd.getInt32(28, Endian.little);
+      bd.setInt32(condStart, 1 << 20, Endian.little);
+
+      expect(
+        () => const GraphDeserializer().deserializeGraph(bytes),
+        throwsA(isA<GraphFormatException>()),
+      );
+    });
+
+    test('a condition table with bytes left over is refused', () async {
+      // Every entry is length-prefixed, so the last one has to land exactly on
+      // the end. Anything else means the table and the count disagree about
+      // where the entries are, and every index past that point is wrong.
+      final g = split(
+        crossroads(restriction: 'no', condition: 'no_left_turn @ (Sa,Su)'),
+      );
+      final bytes = const GraphSerializer().serializeGraph(g);
+      final bd = ByteData.view(bytes.buffer);
+
+      final condStart = bytes.length - bd.getInt32(28, Endian.little);
+      // Shorten the one expression, leaving its tail unaccounted for.
+      bd.setInt32(
+        condStart + 4,
+        bd.getInt32(condStart + 4, Endian.little) - 3,
+        Endian.little,
+      );
+
+      expect(
+        () => const GraphDeserializer().deserializeGraph(bytes),
+        throwsA(
+          isA<GraphFormatException>().having(
+            (e) => e.message,
+            'message',
+            contains('trailing'),
+          ),
+        ),
       );
     });
 
