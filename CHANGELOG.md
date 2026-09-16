@@ -1,3 +1,86 @@
+## 1.3.0
+
+- **Turn restrictions are honoured, so a route is one a rider may legally
+  follow.** A left turn the sign forbids is not a longer route, it is a wrong
+  one — and the rider finds out while sitting at the junction. `OsmConverter`
+  now reads `type=restriction` relations, which it previously skipped
+  entirely: it passed no `onRelation`, so the data never entered the pipeline.
+
+- **A forbidden turn is absent, not expensive.** At a restricted junction the
+  approach that may not turn is retargeted to a *copy* of the junction whose
+  exits are the permitted ones. The movement then has no edge at all.
+
+  This is what keeps the routers untouched. Dijkstra, A* and the contraction
+  hierarchy each hold one scalar cost per vertex, which cannot express "you may
+  not leave by Y if you arrived by X" — the cheapest way to reach a junction
+  may be the very approach that is forbidden onward, and a search that has
+  collapsed both approaches into one label can no longer tell them apart.
+  Encoding the restriction in the *shape* of the graph sidesteps that, and it
+  means a CH shortcut can never bake in an illegal turn, because the movement
+  was never there to shortcut.
+
+  The compressor takes most of the cost straight back: an `only_*` copy has one
+  way in and one out, so the chain walk merges approach and exit into a single
+  edge that says "arriving this way, you continue that way" — which *is* the
+  restriction, at no cost in vertices.
+
+- **What is refused is as deliberate as what is accepted**, and every refusal
+  is counted in `TurnRestrictionStats` rather than dropped quietly. A
+  restriction not honoured is a route that may be proposed illegally, so the
+  number that is *not* handled is the one worth reporting. Via-way restrictions
+  (the other shape, where a divided road forces traffic through a connector)
+  are out of scope and counted. A `from`/`to` way running *through* the via
+  node is ambiguous and skipped: for a `no_*` banning both branches forbids a
+  legal movement, for an `only_*` allowing both permits an illegal one, and the
+  relation does not say which is meant.
+
+- **`except=` is honoured**, via `VehicleProfile.restrictionExceptions`.
+  Ignoring it applies bus-lane restrictions to bicycles — over-restriction that
+  lands hardest on the mode with the fewest alternatives.
+
+- **U-turns change only where OSM says so.** `no_u_turn` needs no special
+  handling: the `to` is the reverse of the `from`, so the ordinary rule removes
+  it. U-turns everywhere else behave exactly as before.
+
+- **Conditional restrictions are carried, and default to the strict reading.**
+  A `restriction:conditional` cannot be topology — one graph has to answer both
+  "restricted now" and "not restricted now" — so the edge stays and `adjCond`
+  flags it. With no clock supplied, every condition applies: a turn forbidden
+  *sometimes* is treated as forbidden, because assuming the permissive case
+  would route a rider through a junction they may be barred from at exactly the
+  hour the restriction exists for. A clock parameter will narrow this without
+  another format change.
+
+  One byte per edge is *exact* only because of the split: the movement is
+  already isolated onto a copy, so "this edge, from this approach" is
+  determined by the edge alone. Without the split this would need a table keyed
+  by edge pairs and a search state per incoming edge.
+
+- **⚠️ Graph format v4 — every stored graph must be rebuilt.** The header grew
+  24 → 32 bytes (not 28: an extra `int32` would leave every `f64` behind it on
+  a 4-byte boundary, where `asFloat64List` *throws*). `splitParent` joins the
+  i32 block, `adjCond` the u8 tail, and the condition strings go last inside
+  the payload so the existing CRC covers them. A graph with no restrictions
+  writes what it always wrote, plus eight bytes.
+
+  **A v3 graph read as a v4 would be worse than refused**: it has no split
+  junctions, so every restriction in the city silently would not apply, and the
+  routes would look entirely reasonable while being illegal to follow. That is
+  a harder failure to notice than the v2 → v3 case, where the cost at least
+  disagreed.
+
+- **Fixed: `KdTree` could throw `RangeError` on a subset index.** Excluding
+  split copies makes the index cover fewer vertices than the graph — which the
+  format already allowed, since the serializer writes `order.length` — but
+  `findNearest` and `findWithinRadius` hardcoded `nodeCount` in four places. A
+  latent bug, independent of this feature.
+
+- **Fixed: `GraphCompressor` could renumber non-deterministically.** Its
+  `originalId` sort had no tie-break and Dart's `List.sort` is not stable, so
+  once split copies share their parent's id, two compilations of the same input
+  could produce different bytes — breaking the package's byte-identical-output
+  guarantee and the checksums built on it.
+
 ## 1.2.0
 
 - **Traffic lights are part of the cost.** A route through fifteen signalised
