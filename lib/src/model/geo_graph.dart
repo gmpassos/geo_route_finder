@@ -1,6 +1,7 @@
 import 'package:geo_osm_pbf/geo_osm_pbf.dart';
 
 import 'geo_edge.dart';
+import 'geo_turn_restriction.dart';
 
 /// The normalized, data-source-agnostic graph that every adapter converts into
 /// and that the routing engine operates on exclusively.
@@ -32,10 +33,23 @@ class GeoGraph {
   /// and reads as "no lights modelled" rather than "no lights here".
   final Set<int> signalNodeIds;
 
+  /// Movements a vehicle may not make, keyed by OSM node id.
+  ///
+  /// Carried as ids for the same reason [signalNodeIds] is: this type is what
+  /// every adapter converts *into*, and ids are the only identifier an adapter
+  /// can be expected to know. Edge indices do not exist yet, and the ones that
+  /// will are assigned twice — once by the builder, again by the compressor.
+  ///
+  /// Empty for a source that models no restrictions, which reads as "none
+  /// modelled" rather than "none here" — the same honest distinction the
+  /// signal set draws.
+  final List<GeoTurnRestriction> turnRestrictions;
+
   const GeoGraph({
     required this.nodes,
     required this.edges,
     this.signalNodeIds = const {},
+    this.turnRestrictions = const [],
   });
 
   /// An empty graph.

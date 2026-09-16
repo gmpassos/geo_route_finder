@@ -167,6 +167,151 @@ Uint8List buildWayPbf({
   return out.toBytes();
 }
 
+/// One way in a [buildOsmPbf] fixture.
+typedef PbfWay = ({int id, List<int> nodeIds, Map<String, String> tags});
+
+/// One relation member. `type` is `0` node, `1` way, `2` relation — the wire
+/// values, so no translation table is needed.
+typedef PbfMember = ({int type, int ref, String role});
+
+/// One relation in a [buildOsmPbf] fixture.
+typedef PbfRelation = ({
+  int id,
+  List<PbfMember> members,
+  Map<String, String> tags,
+});
+
+/// Builds an `.osm.pbf` carrying several ways and relations.
+///
+/// [buildWayPbf] carries exactly one way, which is enough for the tag and
+/// geometry paths but not for a turn restriction — that needs a `from` way, a
+/// `to` way, and a relation joining them across a shared node. Rather than
+/// grow the older helper's signature and disturb its callers, this is the
+/// general form; both write the same block shapes.
+///
+/// Nodes, ways and relations go out in that order, each in its own primitive
+/// group, which is what a real writer emits.
+Uint8List buildOsmPbf({
+  required List<int> nodeIds,
+  required List<double> lats,
+  required List<double> lons,
+  List<PbfWay> ways = const [],
+  List<PbfRelation> relations = const [],
+  Map<int, Map<String, String>> taggedNodes = const {},
+}) {
+  int latVal(double deg) => (deg / 1e-7).round();
+
+  final strings = <String>[''];
+  final indexOf = <String, int>{};
+  int intern(String s) =>
+      indexOf.putIfAbsent(s, () => (strings..add(s)).length - 1);
+
+  // Everything is interned before the string table is written, because the
+  // table has to contain what every group referenced.
+  final nodeKeysVals = <int>[];
+  if (taggedNodes.isNotEmpty) {
+    for (final id in nodeIds) {
+      (taggedNodes[id] ?? const <String, String>{}).forEach((k, v) {
+        nodeKeysVals
+          ..add(intern(k))
+          ..add(intern(v));
+      });
+      nodeKeysVals.add(0);
+    }
+  }
+
+  final dense = BytesBuilder();
+  _writePackedSInt(dense, 1, _delta(nodeIds));
+  _writePackedSInt(dense, 8, _delta([for (final v in lats) latVal(v)]));
+  _writePackedSInt(dense, 9, _delta([for (final v in lons) latVal(v)]));
+  if (nodeKeysVals.isNotEmpty) _writePackedVarint(dense, 10, nodeKeysVals);
+
+  final nodeGroup = BytesBuilder();
+  _writeBytes(nodeGroup, 2, dense.toBytes());
+
+  final wayGroup = BytesBuilder();
+  for (final w in ways) {
+    final keys = <int>[];
+    final vals = <int>[];
+    w.tags.forEach((k, v) {
+      keys.add(intern(k));
+      vals.add(intern(v));
+    });
+
+    final way = BytesBuilder();
+    _writeVarint(way, (1 << 3));
+    _writeVarint(way, w.id);
+    _writePackedVarint(way, 2, keys);
+    _writePackedVarint(way, 3, vals);
+    _writePackedSInt(way, 8, _delta(w.nodeIds));
+    _writeBytes(wayGroup, 3, way.toBytes());
+  }
+
+  final relationGroup = BytesBuilder();
+  for (final r in relations) {
+    final keys = <int>[];
+    final vals = <int>[];
+    r.tags.forEach((k, v) {
+      keys.add(intern(k));
+      vals.add(intern(v));
+    });
+
+    final rel = BytesBuilder();
+    _writeVarint(rel, (1 << 3));
+    _writeVarint(rel, r.id);
+    _writePackedVarint(rel, 2, keys);
+    _writePackedVarint(rel, 3, vals);
+    // Roles intern into the same table as keys and values; an empty role
+    // lands on index 0, the table's empty string.
+    _writePackedVarint(rel, 8, [for (final m in r.members) intern(m.role)]);
+    // Member ids delta against the previous member of *this* relation,
+    // starting from zero, whatever the member's type.
+    _writePackedSInt(rel, 9, _delta([for (final m in r.members) m.ref]));
+    // Types are packed unsigned, not zig-zag.
+    _writePackedVarint(rel, 10, [for (final m in r.members) m.type]);
+    _writeBytes(relationGroup, 4, rel.toBytes());
+  }
+
+  final st = BytesBuilder();
+  for (final s in strings) {
+    _writeBytes(st, 1, Uint8List.fromList(s.codeUnits));
+  }
+
+  final block = BytesBuilder();
+  _writeBytes(block, 1, st.toBytes());
+  _writeBytes(block, 2, nodeGroup.toBytes());
+  if (ways.isNotEmpty) _writeBytes(block, 2, wayGroup.toBytes());
+  if (relations.isNotEmpty) _writeBytes(block, 2, relationGroup.toBytes());
+
+  return _osmDataBlob(block.toBytes());
+}
+
+/// Wraps a `PrimitiveBlock` in the `OSMData` blob and its length-prefixed
+/// header — the framing every `.osm.pbf` is a sequence of.
+Uint8List _osmDataBlob(Uint8List block) {
+  final blob = BytesBuilder();
+  _writeBytes(blob, 1, block);
+  final blobBytes = blob.toBytes();
+
+  final header = BytesBuilder();
+  _writeBytes(header, 1, Uint8List.fromList('OSMData'.codeUnits));
+  _writeVarint(header, (3 << 3));
+  _writeVarint(header, blobBytes.length);
+  final headerBytes = header.toBytes();
+
+  final len = headerBytes.length;
+  return (BytesBuilder()
+        ..add([
+          (len >> 24) & 0xFF,
+          (len >> 16) & 0xFF,
+          (len >> 8) & 0xFF,
+          len & 0xFF,
+        ])
+        ..add(headerBytes)
+        ..add(blobBytes))
+      .toBytes();
+}
+
 /// Writes [bytes] to a fresh temporary `.osm.pbf` file and returns its path. The
 /// caller is responsible for deleting the parent directory.
 String writeTempPbf(Uint8List bytes) {

@@ -47,6 +47,7 @@ export 'src/version.dart';
 export 'src/model/geo_edge.dart';
 export 'src/model/geo_graph.dart';
 export 'src/model/geo_route.dart';
+export 'src/model/geo_turn_restriction.dart';
 
 // Data source extension point and the OSM adapter.
 export 'src/datasource/geo_data_source.dart';
